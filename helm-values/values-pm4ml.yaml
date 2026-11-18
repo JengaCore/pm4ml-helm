@@ -96,6 +96,11 @@ management-api:
         "extensions": { "subjectAltName": { "dns": ["ml-connect.CHANGE-ME-pm4ml-domain"], "ips": [] } } }
   ingress:
     enabled: false
+  # One replica by design: it owns the enrolment state machine in the store.
+  # The SDK keeps running on the certificates it already has while it restarts.
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
 
 # ---------------------------------------------------------------------------
 # Core connector: replace with your own. The simulator is for tests only.
@@ -122,6 +127,9 @@ mojaloop-core-connector:
     enabled: false
   readinessProbe:
     enabled: false
+  resources:                            # size for your own connector
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
 
 # ---------------------------------------------------------------------------
 # SDK scheme adapter (default-config.env + docker-compose.yaml)
@@ -130,7 +138,11 @@ scheme-adapter:
   sdk-scheme-adapter-api-svc:
     image:
       tag: v24.19.3                     # = Compose SDK_IMAGE_TAG
-    replicaCount: 1
+    # Production: 2+ replicas on different nodes (the chart's soft pod
+    # anti-affinity), a PodDisruptionBudget (post-render/pdb.yaml) and a
+    # graceful stop (post-render: preStop + 60 s grace). Replicas share state
+    # through Redis, so any replica can take any callback. Compose runs 1.
+    replicaCount: 2
     redis:
       host: pm4ml-redis
       port: 6379

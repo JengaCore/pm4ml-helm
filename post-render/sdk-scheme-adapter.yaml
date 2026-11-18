@@ -6,6 +6,12 @@ spec:
   template:
     spec:
       automountServiceAccountToken: false
+      # Graceful rollout / scale-in: the pod leaves the Service at once, and
+      # preStop keeps it alive long enough for payments already in flight to
+      # get their callbacks (REQUEST_PROCESSING_TIMEOUT_SECONDS = 30) before
+      # SIGTERM closes Redis and the listeners. Without it, killing a replica
+      # mid-load failed in-flight payments that the ledger still committed.
+      terminationGracePeriodSeconds: 60
       volumes:
         - name: pm4ml-tls
           secret:
@@ -13,6 +19,16 @@ spec:
             defaultMode: 0400
       containers:
         - name: sdk-scheme-adapter-api-svc
+          # The chart has no resources value for the SDK. Sized from the
+          # 2026-11-18 load test (~6 payments/s on 3 replicas, ~200 MiB RSS
+          # each); one Node.js event loop uses at most one core.
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            limits: { memory: 768Mi }
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 35"]
           volumeMounts:
             - name: pm4ml-tls
               mountPath: /secrets/tls

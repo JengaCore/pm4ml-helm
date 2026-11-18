@@ -6,7 +6,7 @@
 #   NS=<namespace> KEYS_FILE=./<ns>-store-init.json ./secret-store/unseal.sh
 set -euo pipefail
 NS="${NS:?set NS}"
-POD="${POD:-pm4ml-vault-0}"
+POD="${POD:-${RELEASE:-pm4ml}-vault-0}"
 unseal() {
   printf '%s' "$1" | kubectl -n "$NS" exec -i "$POD" -c vault -- \
     sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$(cat)" >/dev/null'

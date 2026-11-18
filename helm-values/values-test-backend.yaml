@@ -1,0 +1,6 @@
+# TEST ONLY, with test-backend/mojaloop-simulator.yaml: the SDK talks to the
+# simulator instead of a core connector. Remove both before production.
+scheme-adapter:
+  sdk-scheme-adapter-api-svc:
+    env:
+      BACKEND_ENDPOINT: "pm4ml-sim-backend:3000"

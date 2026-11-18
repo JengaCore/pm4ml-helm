@@ -2,6 +2,7 @@
 # The charts cannot mount these Secrets or read env from them, so it is done here.
 resources:
   - all.yaml
+  - pdb.yaml
 patches:
   - path: sdk-scheme-adapter.yaml
     target:

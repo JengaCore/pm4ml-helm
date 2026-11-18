@@ -51,7 +51,7 @@ NS=dfsp                                   # any namespace you own
 kubectl create namespace $NS               # if you may
 helm repo add pm4ml https://pm4ml.github.io/mojaloop-payment-manager-helm/repo && helm repo update
 
-# 1. Redis and the secret store
+# 1. Redis (production: redis/values-redis-ha.yaml, see the checklist) and the secret store
 kubectl -n $NS apply -f redis/redis.yaml
 kubectl -n $NS apply -f secret-store/vault/vault.yaml
 NS=$NS STORE=vault DFSP_ID=<dfsp id> ./secret-store/init.sh   # writes ./$NS-store-init.json: move it to escrow
@@ -126,18 +126,46 @@ openssl s_client -connect ml-connect.<your domain>:443 -servername ml-connect.<y
 
 More failure modes: switch-iac `docs/DFSP-ONBOARDING.md`.
 
-## Validation status
+## Production checklist
 
-| Check | Result |
+| | Default here | Why |
+|---|---|---|
+| SDK replicas | 2, soft anti-affinity, PodDisruptionBudget `minAvailable: 1` | Replicas share state in Redis: any replica takes any callback |
+| SDK stop | `preStop: sleep 35`, 60 s grace | Payments in flight finish before the pod stops (validated: 0 failures while pods were killed under load) |
+| Redis | **`redis/values-redis-ha.yaml`** (3 Redis + Sentinel + HAProxy, AOF, PVC) | The single `redis/redis.yaml` is a single point of failure: a Redis crash failed 47 of 60 payments in flight |
+| Secret store | Vault (= Compose) or OpenBao (unseals itself) | management-api is off the payment path: payments continue while it or the store is down (validated) |
+| Resources | requests/limits on SDK, management-api, core connector | Sized from the load test; one SDK replica uses at most one core |
+| Metrics | `prometheus.io/scrape` on the SDK (port 4004), `monitoring/podmonitor.yaml` | Alert examples in that file |
+| Idempotency | **your core connector** must not resend a payment it already sent | The SDK does not de-duplicate on `homeTransactionId`: the same id sent twice is two payments (tested). It is idempotent per `transferId`. After any error, ask `GET /transfers/{transferId}` (it queries the hub) before retrying |
+| Several DFSPs per namespace | `RELEASE=<name>` on the scripts, `scripts/for-release.sh` for manifests and values | Names follow the Helm release |
+
+## Validation (2026-11-18, against sbx UAT, no switch change)
+
+Two DFSPs from this chart on the Coder cluster, onboarded through MCM the Compose way (hub adds the DFSP in MCM, hands over the Keycloak client id and secret, signs the CSR; the hub reconciler wires the ledger):
+
+| DFSP | Store | Redis | Callback |
+|---|---|---|---|
+| `pm4mlhelm01` | OpenBao 2.6.5, static seal | `redis/redis.yaml` (single) | `ml-connect.195-15-198-39.sslip.io` (L4 LB) |
+| `pm4mlhelm02` | Vault 1.13.3, Shamir | `dandydeveloper/redis-ha` (3 + Sentinel + HAProxy) | `ml-connect.84-234-26-66.sslip.io` (L4 LB) |
+
+ISO 20022, GMD, mTLS both ways, JWS signed and validated, test backend `test-backend/mojaloop-simulator.yaml`. Ledger positions were read from central-ledger after every step; they always matched the payments reported completed, except where noted.
+
+| Test | Result |
 |---|---|
-| Chart renders, both modes, with the post-renderer | ✓ |
-| Vault 1.13.3: init, unseal, AppRole; management-api logs in and keeps its state machine in it | ✓ 2026-11-18, Coder cluster |
-| OpenBao 2.6.5: same, plus a process restart that unsealed itself | ✓ 2026-11-18 |
-| management-api reaches the sbx UAT hub's Keycloak and MCM | ✓ (`401`: DFSP not admitted, as expected) |
-| SDK connects to management-api's control channel | ✓ |
-| sbx PROD (MCM + Keycloak, no Ory), OpenBao: DFSP added in MCM, PM4ML enrolled with its client id/secret (CA, CSR, JWS key, endpoints), hub signed the CSR, SDK up with MCM-issued certificates, callback host serving the MCM-issued server certificate | ✓ 2026-11-18 |
-| Ledger wiring and transfers | **pending** (hub reconciler not yet on sbx PROD) |
-| EKS / AKS run | pending |
+| Enrolment through `/pm4mlapi` with the client id/secret (CA, CSR, JWS key, endpoints, hub CSR), CSR signed in MCM, reconciler wiring | ✓ both DFSPs |
+| Send A→B and receive (B→A) | ✓ `COMPLETED` in 1–2 s, positions +7 / −7 |
+| Same `homeTransactionId` sent twice | **two payments** (positions moved twice): see Idempotency above |
+| `acceptQuote` replayed on a completed transfer | no new payment, positions unchanged |
+| Load: 3 SDK replicas per DFSP, 150 + 150 payments, both directions at once, 20 concurrent | 300/300, p50 2 s, p95 4 s, ledger exact; callbacks spread over all replicas |
+| One SDK pod per DFSP killed during 100 + 100 payments, without graceful stop | 196/200; one payment reported failed was committed. Fixed by the preStop hook: |
+| Same, with preStop + 60 s grace | **200/200, ledger exact** |
+| Both management-api scaled to 0, 30 + 30 payments | 60/60 |
+| Redis-HA master killed during 60 payments | **60/60** |
+| Single Redis crashed (AOF kept) during 60 payments | 13/60; SDKs reconnected by themselves. 3 transfers stayed `RESERVED` and expired: aborted, no money moved, positions balanced, nothing reserved |
+| OpenBao process killed | unsealed itself, management-api reconnected |
+| Metrics on :4004 (`mojaloop_connector_outbound_*` counters and latency histograms, event-loop lag) | ✓ |
+
+Not covered yet: static mode end to end, a run on EKS/AKS, the redis-ha values with persistence/NetworkPolicy (rendered, failover tested without persistence because the test cluster's volume quota is full), structured JSON logs (`LOG_IS_JSON_OUTPUT` is read but not used by SDK v24.19.3).
 
 ## Operations
 
