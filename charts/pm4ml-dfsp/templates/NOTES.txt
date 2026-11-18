@@ -1,0 +1,13 @@
+{{ .Release.Name }}: payment manager for DFSP {{ .Values.dfspId }} on {{ .Values.switch.domain }}.
+
+1. The bootstrap Job prepares the secrets and the {{ .Values.store.type }} store. Follow it:
+     kubectl -n {{ .Release.Namespace }} logs -f job/{{ include "dfsp.fullname" . }}-bootstrap-{{ .Release.Revision }}
+   On first install: move Secret {{ include "dfsp.fullname" . }}-store-init (keys, root token) to escrow, then delete it.
+   {{- if eq .Values.store.type "openbao" }}
+   Back up Secret {{ include "dfsp.sealSecret" . }} (the seal key), away from the snapshots.
+   {{- end }}
+2. The callback host {{ .Values.callback.host }} must point at:
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "dfsp.fullname" . }}-callbacks
+3. Enrolment with MCM (needs Secret {{ include "dfsp.mcmSecret" . }}):
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "dfsp.mgmtName" . }} | grep -oE '"eventType":"[A-Z_]+"' | sort | uniq -c
+   Then the hub operator signs the request in MCM.

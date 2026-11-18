@@ -1,0 +1,77 @@
+{{- $sdkSel := dict "name" "sdk-scheme-adapter" "ctx" . -}}
+{{- with .Values.callback.service }}{{ if .enabled }}
+# The switch's callbacks, TLS passed through: the SDK terminates the mutual TLS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dfsp.fullname" $ }}-callbacks
+  labels: {{- include "dfsp.labels" $ | nindent 4 }}
+  {{- with .annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .type }}
+  {{- if eq .type "LoadBalancer" }}
+  externalTrafficPolicy: {{ .externalTrafficPolicy }}
+  {{- with .loadBalancerSourceRanges }}
+  loadBalancerSourceRanges: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- end }}
+  selector: {{- include "dfsp.selector" $sdkSel | nindent 4 }}
+  ports:
+    - name: tls-fspiop
+      port: {{ .port }}
+      targetPort: 4000
+      {{- if and (eq .type "NodePort") .nodePort }}
+      nodePort: {{ .nodePort }}
+      {{- end }}
+{{- end }}{{ end }}
+{{- if .Values.callback.istio.enabled }}
+---
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "dfsp.fullname" . }}-callbacks
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  selector: {{- toYaml .Values.callback.istio.gatewaySelector | nindent 4 }}
+  servers:
+    - port: { number: 443, name: tls-fspiop, protocol: TLS }
+      tls: { mode: PASSTHROUGH }
+      hosts: [ {{ .Values.callback.host | quote }} ]
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "dfsp.fullname" . }}-callbacks
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  gateways: [ {{ include "dfsp.fullname" . }}-callbacks ]
+  hosts: [ {{ .Values.callback.host | quote }} ]
+  tls:
+    - match: [ { port: 443, sniHosts: [ {{ .Values.callback.host | quote }} ] } ]
+      route: [ { destination: { host: {{ include "dfsp.sdkName" . }}, port: { number: 4000 } } } ]
+{{- end }}
+{{- if .Values.callback.ingressNginx.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "dfsp.fullname" . }}-callbacks
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  ingressClassName: {{ .Values.callback.ingressNginx.className }}
+  rules:
+    - host: {{ .Values.callback.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: {{ include "dfsp.sdkName" . }}, port: { number: 4000 } } }
+{{- end }}
