@@ -92,7 +92,7 @@ spec:
         accessModes: [ReadWriteOnce]
         resources: { requests: { storage: 1Gi } }
 ---
-# Only management-api talks to the store. Operators use `kubectl exec`.
+# Only management-api and the backup job talk to the store. Operators use `kubectl exec`.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -105,5 +105,7 @@ spec:
     - from:
         - podSelector:
             matchLabels: { app.kubernetes.io/name: management-api, app.kubernetes.io/instance: pm4ml }
+        - podSelector:              # secret-store/backup-cronjob.yaml
+            matchLabels: { app.kubernetes.io/name: store-backup, app.kubernetes.io/instance: pm4ml }
       ports:
         - { port: 8200 }

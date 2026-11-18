@@ -9,6 +9,7 @@ changed is in [docs/REVIEW-2026-11.md](docs/REVIEW-2026-11.md).
 
 | Doc | |
 |---|---|
+| [docs/GENERIC-KUBERNETES.md](docs/GENERIC-KUBERNETES.md) | any Kubernetes, no cloud service: end-to-end install, callback options, day 2 |
 | [docs/PRODUCTION.md](docs/PRODUCTION.md) | keys and backups, load balancer and mTLS, AWS / Azure / on-prem reference |
 | [docs/OPTIONS.md](docs/OPTIONS.md) | every default, its options, and where Helm differs from Compose |
 | [docs/SECRET-BACKENDS.md](docs/SECRET-BACKENDS.md) | Vault, OpenBao, managed and cloud options |
@@ -179,6 +180,7 @@ ISO 20022, GMD, mTLS both ways, JWS signed and validated, test backend `test-bac
 | Static mode, identity exported from the store (`scripts/export-identity.sh`) into Kubernetes Secrets, no management-api | 20/20 sent and 20/20 received |
 | Redis-HA from `redis/values-redis-ha.yaml` (AUTH from `REDIS_HA=1`, NetworkPolicies on Redis and HAProxy) | 20/20 each way; unauthenticated access refused; another DFSP's pod blocked at HAProxy |
 | Backup with the snapshot-only AppRole (no root token) | snapshot saved; the same AppRole gets `403` on the DFSP's keys |
+| Backup CronJob (`secret-store/backup-cronjob.yaml`) to an S3-compatible bucket | snapshot (712 KB) taken with the backup AppRole and uploaded |
 | `init.sh` re-run on an initialised store | CA kept, backup AppRole added, secret-ids rotated; without `DFSP_ID` it stops |
 | Metrics on :4004 (`mojaloop_connector_outbound_*` counters and latency histograms, event-loop lag) | ✓ |
 

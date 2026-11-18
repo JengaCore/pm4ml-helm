@@ -54,7 +54,8 @@ flowchart TB
    `<release>-store-backup`, policy: read `sys/storage/raft/snapshot`, nothing
    else; tested: it gets `403` on the DFSP's keys). No root token is needed, so
    the root token goes to escrow as `init.sh` says.
-   Run it on a schedule (CronJob or the platform's backup job) and ship the file
+   On a schedule: `secret-store/backup-cronjob.yaml` (any Kubernetes, any S3-compatible
+   bucket; tested), or the platform's backup job. Ship the file
    to object storage with versioning and object lock. **Tested:** snapshot,
    pod deleted with its data, empty store initialised (`INIT_ONLY=1`),
    snapshot restored: same CA fingerprint, no new enrolment in MCM,
