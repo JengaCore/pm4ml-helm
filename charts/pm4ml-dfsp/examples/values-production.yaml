@@ -6,7 +6,9 @@ switch:
   ilpVersion: "4"
   currency: <currency>
 callback:
-  host: ml-connect.<your domain>     # reserve the IP first, then point DNS at it
+  host: ml-connect.<your domain>     # the name now; DNS can follow (management-api waits)
+  preflight:
+    expectIP: <reserved IP>          # optional: enrol only once DNS points at it
   service:
     type: LoadBalancer
     loadBalancerIP: <reserved IP>    # or the provider's annotation (see values.yaml)
