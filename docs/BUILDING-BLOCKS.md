@@ -26,6 +26,13 @@ flowchart LR
 
 ## The choices
 
+With the [`pm4ml-dfsp` chart](../charts/pm4ml-dfsp), every block below is a
+value: ① `coreConnector.*`, ② `sdk.*`, ③ `redis.mode` (`ha`, `single`,
+`external`), ④ `callback.service` / `callback.istio` / `callback.ingressNginx`,
+⑤ `mcm.*`, ⑥ `store.type` (`openbao`, `vault`), ⑦ `bootstrap.*` or your own
+Secrets, ⑨ `backup.*`, ⑩ `monitoring.*`. The Files column refers to the earlier
+layout.
+
 | # | Block | Options | Validated (2026-11-18, sbx UAT) | Files |
 |---|---|---|---|---|
 | ① | Core connector | the DFSP's own image; the template's simulator for tests | simulator + `test-backend/mojaloop-simulator.yaml` | `helm-values/values-pm4ml.yaml` (`mojaloop-core-connector`), `values-test-backend.yaml` |
@@ -51,7 +58,7 @@ with the rest it must:
 
 | Requirement | Why |
 |---|---|
-| Call the SDK outbound API (`http://<release>-sdk-scheme-adapter-api-svc:4001`) inside the cluster; never expose it | It starts payments without authentication |
+| Call the SDK outbound API (`http://<release>-sdk:4001` with the chart (`SDK_OUTBOUND_URL`); `http://<release>-sdk-scheme-adapter-api-svc:4001` in the earlier layout) inside the cluster; never expose it | It starts payments without authentication |
 | Answer the SDK's backend calls (`BACKEND_ENDPOINT`): parties, quotes, transfers | That is how the DFSP receives payments |
 | Keep a record of the payments it started, keyed by its `homeTransactionId`, and never resend one blindly | The SDK does not de-duplicate on it (tested: same id twice = two payments) |
 | After any error or timeout, ask `GET /transfers/{transferId}` before retrying | A payment can be reported failed and still be committed (pod crash, node loss) |

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: pm4ml-dfsp
+description: >-
+  Payment Manager for Mojaloop (PM4ML) for a DFSP joining a jengacore switch:
+  the SDK scheme adapter, management-api (MCM enrolment), the DFSP's own core
+  connector, a secret store (OpenBao or Vault), Redis, backups and the mutual-TLS
+  callback edge, configured from one values file.
+type: application
+version: 0.1.0
+appVersion: "v24.19.3"
+keywords: [mojaloop, pm4ml, dfsp, payments]
+home: https://github.com/JengaCore/pm4ml-helm
+dependencies:
+  - name: redis-ha
+    version: 4.35.5
+    repository: https://dandydeveloper.github.io/charts
+    condition: redis.ha.enabled

@@ -1,0 +1,41 @@
+# A production DFSP on any Kubernetes. Replace every <...>.
+dfspId: <dfsp id from the hub>
+switch:
+  domain: <switch domain>            # e.g. prod.switch.example
+  apiType: iso20022                  # as the switch
+  ilpVersion: "4"
+  currency: <currency>
+callback:
+  host: ml-connect.<your domain>     # reserve the IP first, then point DNS at it
+  service:
+    type: LoadBalancer
+    loadBalancerIP: <reserved IP>    # or the provider's annotation (see values.yaml)
+    loadBalancerSourceRanges: [<switch egress CIDR>]
+egress:
+  whitelistIps: [<your NAT IP>]
+mcm:
+  clientSecret: { existingSecret: <release>-mcm }   # from the hub operator, via kubectl or External Secrets
+  subject: { organization: <legal name>, country: <CC>, locality: <city> }
+
+coreConnector:
+  image:
+    repository: <registry>/<your core connector>
+    tag: <version>
+  imagePullSecrets: [ { name: <registry secret> } ]
+  port: 3003
+  envFromSecrets:
+    CBS_API_KEY: { secret: <secret>, key: api-key }
+  readinessProbe: { httpGet: { path: /health, port: 3003 } }
+
+store:
+  type: openbao
+  persistence: { enabled: true, size: 1Gi, storageClass: <encrypted class> }
+redis:
+  mode: ha
+redis-ha:
+  existingSecret: <release>-redis-auth   # default pm4ml-redis-auth
+backup:
+  enabled: true
+  s3Secret: <release>-backup-s3
+monitoring:
+  podMonitor: { enabled: true }

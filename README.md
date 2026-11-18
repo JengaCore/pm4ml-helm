@@ -7,6 +7,24 @@ jengacore switch. The defaults match
 [ThitsaX/pm4ml-deployment](https://github.com/ThitsaX/pm4ml-deployment); why it
 changed is in [docs/REVIEW-2026-11.md](docs/REVIEW-2026-11.md).
 
+## Recommended: the `pm4ml-dfsp` chart
+
+[`charts/pm4ml-dfsp`](charts/pm4ml-dfsp) is a self-contained Helm chart: one
+values file provisions the SDK, management-api, **the DFSP's own core
+connector (set `coreConnector.image`)**, the secret store, Redis, the callback
+edge, the bootstrap Job and the backup CronJob.
+
+```bash
+kubectl -n dfsp create secret generic mydfsp-mcm --from-literal=client-secret='<from the hub>'
+helm dependency build charts/pm4ml-dfsp
+helm -n dfsp install mydfsp charts/pm4ml-dfsp -f my-values.yaml
+```
+
+See [charts/pm4ml-dfsp/README.md](charts/pm4ml-dfsp/README.md) (values
+reference, bring your own core connector, examples). The rest of this README
+describes the earlier layout (upstream chart + post-renderer + scripts), kept
+for existing installs.
+
 | Doc | |
 |---|---|
 | [docs/BUILDING-BLOCKS.md](docs/BUILDING-BLOCKS.md) | **start here**: the blocks around the core connector, the options for each, the MCM connection, a production-ready cluster |

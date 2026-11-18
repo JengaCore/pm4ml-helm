@@ -1,0 +1,112 @@
+{{- $m := include "dfsp.mgmtName" . -}}
+{{- $sel := dict "name" "management-api" "ctx" . -}}
+{{- $s := .Values.mcm.subject -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $m }}-csr
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+data:
+  caCSRParameters.json: {{ dict "CN" (printf "%s CA" .Values.dfspId) "O" ($s.organization | default .Values.dfspId) "OU" $s.organizationalUnit "C" $s.country "ST" $s.state "L" $s.locality "E" $s.email | toJson | quote }}
+  tlsClientCSRParameters.json: {{ dict "subject" (dict "CN" .Values.dfspId "O" ($s.organization | default .Values.dfspId) "OU" $s.organizationalUnit "C" $s.country "L" $s.locality) "extensions" (dict "subjectAltName" (dict "dns" list "ips" list)) | toJson | quote }}
+  tlsServerCSRParameters.json: {{ dict "subject" (dict "CN" .Values.callback.host "O" ($s.organization | default .Values.dfspId) "OU" $s.organizationalUnit "C" $s.country "L" $s.locality) "extensions" (dict "subjectAltName" (dict "dns" (list .Values.callback.host) "ips" list)) | toJson | quote }}
+  {{- with .Values.switch.caBundle }}
+  switch-ca.pem: {{ . | quote }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $m }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+    app.kubernetes.io/name: management-api
+spec:
+  replicas: 1                      # owns the enrolment state machine: one replica
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{- include "dfsp.selector" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "dfsp.labels" . | nindent 8 }}
+        app.kubernetes.io/name: management-api
+      annotations:
+        checksum/csr: {{ toJson (list .Values.mcm .Values.callback.host .Values.dfspId) | sha256sum | trunc 16 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      {{- with .Values.managementApi.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.managementApi.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: approle
+          secret: { secretName: {{ include "dfsp.fullname" . }}-vault-approle, defaultMode: 0440 }
+        - name: csr
+          configMap: { name: {{ $m }}-csr }
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: management-api
+          image: "{{ .Values.managementApi.image.repository }}:{{ .Values.managementApi.image.tag }}"
+          imagePullPolicy: {{ .Values.managementApi.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 9000 }
+            - { name: control, containerPort: 4005 }
+          startupProbe: { httpGet: { path: /health, port: http }, periodSeconds: 5, failureThreshold: 30 }
+          readinessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 20 }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          resources: {{- toYaml .Values.managementApi.resources | nindent 12 }}
+          volumeMounts:
+            - { name: approle, mountPath: /vault/auth-data, readOnly: true }
+            - { name: csr, mountPath: /resources, readOnly: true }
+            - { name: tmp, mountPath: /secrets }
+          env:
+            - { name: DFSP_ID, value: {{ .Values.dfspId | quote }} }
+            - { name: AUTH_ENABLED, value: "true" }
+            - { name: AUTH_CLIENT_ID, value: {{ .Values.dfspId | quote }} }
+            - name: AUTH_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "dfsp.mcmSecret" . }}, key: {{ .Values.mcm.clientSecret.key }} } }
+            - { name: HUB_IAM_PROVIDER_URL, value: {{ include "dfsp.keycloakUrl" . | quote }} }
+            - { name: OIDC_TOKEN_ROUTE, value: "realms/{{ .Values.switch.realm }}/protocol/openid-connect/token" }
+            - { name: MCM_SERVER_ENDPOINT, value: {{ include "dfsp.mcmUrl" . | quote }} }
+            - { name: MOJALOOP_CONNECTOR_FQDN, value: {{ .Values.callback.host | quote }} }
+            - { name: CALLBACK_URL, value: "https://{{ .Values.callback.host }}" }
+            - { name: WHITELIST_IP, value: {{ join "," .Values.egress.whitelistIps | quote }} }
+            - name: CACHE_URL
+              valueFrom: { secretKeyRef: { name: {{ include "dfsp.fullname" . }}-runtime, key: cache-url } }
+            - { name: CONTROL_LISTEN_PORT, value: "4005" }
+            - { name: ENABLE_CORS, value: "true" }
+            - { name: PRIVATE_KEY_ALGORITHM, value: rsa }
+            - { name: PRIVATE_KEY_LENGTH, value: {{ .Values.managementApi.privateKeyLength | quote }} }
+            - { name: CA_CSR_PARAMETERS, value: /resources/caCSRParameters.json }
+            - { name: DFSP_CLIENT_CSR_PARAMETERS, value: /resources/tlsClientCSRParameters.json }
+            - { name: DFSP_SERVER_CSR_PARAMETERS, value: /resources/tlsServerCSRParameters.json }
+            - { name: CERT_MANAGER_ENABLED, value: "false" }
+            - { name: VAULT_ENDPOINT, value: {{ include "dfsp.storeAddr" . | quote }} }
+            - { name: VAULT_AUTH_METHOD, value: APP_ROLE }
+            - { name: VAULT_ROLE_ID_FILE, value: /vault/auth-data/role-id }
+            - { name: VAULT_ROLE_SECRET_ID_FILE, value: /vault/auth-data/secret-id }
+            - { name: VAULT_MOUNT_PKI, value: pki }
+            - { name: VAULT_MOUNT_KV, value: secrets }
+            - { name: VAULT_PKI_CLIENT_ROLE, value: client-cert-role }
+            - { name: VAULT_PKI_SERVER_ROLE, value: server-cert-role }
+            {{- if .Values.switch.caBundle }}
+            - { name: NODE_EXTRA_CA_CERTS, value: /resources/switch-ca.pem }
+            {{- end }}
+            {{- range $k, $v := .Values.managementApi.extraEnv }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $m }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "dfsp.selector" $sel | nindent 4 }}
+  ports:
+    - { name: control, port: 4005, targetPort: 4005 }
+    - { name: http, port: 9000, targetPort: 9000 }
