@@ -37,6 +37,9 @@ metadata:
   labels: { app.kubernetes.io/name: pm4ml-vault }
 spec:
   selector: { app.kubernetes.io/name: pm4ml-vault }
+  # Reachable while uninitialised or sealed (readiness fails then): the
+  # bootstrap and restore Jobs initialise and restore it through this Service.
+  publishNotReadyAddresses: true
   ports:
     - { name: http, port: 8200, targetPort: 8200 }
 ---
@@ -107,5 +110,7 @@ spec:
             matchLabels: { app.kubernetes.io/name: management-api, app.kubernetes.io/instance: pm4ml }
         - podSelector:              # secret-store/backup-cronjob.yaml
             matchLabels: { app.kubernetes.io/name: store-backup, app.kubernetes.io/instance: pm4ml }
+        - podSelector:              # jobs/bootstrap.yaml, jobs/restore.yaml
+            matchLabels: { app.kubernetes.io/name: store-bootstrap, app.kubernetes.io/instance: pm4ml }
       ports:
         - { port: 8200 }

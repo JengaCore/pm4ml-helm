@@ -142,8 +142,9 @@ TLS cannot carry them.
 
 | Task | Command |
 |---|---|
+| Every step as a Kubernetes Job/CronJob instead of a script | `jobs/` (bootstrap, restore, Vault unsealer) and `secret-store/backup-cronjob.yaml`; see [BUILDING-BLOCKS.md](BUILDING-BLOCKS.md#operations-scripts-or-kubernetes-jobs) |
 | Backup now | `kubectl -n $NS create job $R-store-backup-now --from=cronjob/$R-store-backup` |
-| Restore after losing the store | download the latest snapshot, then `INIT_ONLY=1 ./secret-store/init.sh`, `ROOT_TOKEN=<that init's root token> ./secret-store/backup.sh restore <file>`, restart management-api ([PRODUCTION.md](PRODUCTION.md)) |
+| Restore after losing the store | `jobs/restore.yaml` (latest snapshot from the bucket), or by hand: `INIT_ONLY=1 ./secret-store/init.sh`, `ROOT_TOKEN=<that init's root token> ./secret-store/backup.sh restore <file>`; then restart management-api ([PRODUCTION.md](PRODUCTION.md)) |
 | Vault sealed after a restart | `NS=$NS RELEASE=$R ./secret-store/unseal.sh` (payments continue meanwhile) |
 | Break-glass copy of the keys | `NS=$NS RELEASE=$R STORE=openbao OUT=/secure/dir ./scripts/export-identity.sh` |
 | Rotate the MCM client secret | `NS=$NS RELEASE=$R ROTATE_CLIENT_SECRET=1 ./scripts/create-mcm-secrets.sh`, restart management-api |

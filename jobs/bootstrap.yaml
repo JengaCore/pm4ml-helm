@@ -1,0 +1,218 @@
+# Kubernetes-native bootstrap: a Job instead of secret-store/init.sh and
+# scripts/create-mcm-secrets.sh. Run it once after the store and Redis are up,
+# and again after an upgrade of this file (it is idempotent).
+#
+#   kubectl -n <ns> create configmap pm4ml-bootstrap-config \
+#     --from-literal=DFSP_ID=<dfsp id> --from-literal=STORE=openbao   # or vault
+#     # optional: --from-literal=REDIS_HA=1   (redis/values-redis-ha.yaml)
+#     #           --from-literal=CACHE_URL_SECRET=<secret>/<key>  (managed Redis URL)
+#   kubectl -n <ns> apply -f jobs/bootstrap.yaml       (or ./scripts/for-release.sh <release> ...)
+#   kubectl -n <ns> wait --for=condition=complete job/pm4ml-bootstrap --timeout=5m
+#
+# What it does, each step only if needed:
+#   store   initialise (Vault: 5 shares / 3, unsealed with them; OpenBao static
+#           seal: 5 recovery shares), mounts, the DFSP CA (never replaced),
+#           roles, policies, the management-api and backup AppRoles
+#   secrets <release>-vault-approle, <release>-store-backup, <release>-runtime
+#           (ILP secret, Redis URL), <release>-redis-auth (REDIS_HA=1),
+#           <release>-tls / <release>-jws placeholders
+#   escrow  the init output (unseal/recovery keys, root token) goes into Secret
+#           <release>-store-init. MOVE IT TO ESCROW AND DELETE IT:
+#             kubectl -n <ns> get secret pm4ml-store-init -o jsonpath='{.data.init\.json}' | base64 -d > init.json
+#             kubectl -n <ns> delete secret pm4ml-store-init
+#           Re-runs that must change the store need a token: put one in Secret
+#           <release>-store-token (key token) for the run, then delete it.
+#
+# Not created: <release>-mcm, the MCM client secret. It comes from the hub
+# operator: kubectl create secret, or External Secrets from your secrets manager.
+#
+# RBAC: a Role limited to Secrets in this namespace. Nothing cluster-wide.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pm4ml-bootstrap
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pm4ml-bootstrap
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [pm4ml-vault-approle, pm4ml-store-backup, pm4ml-runtime, pm4ml-redis-auth,
+                    pm4ml-tls, pm4ml-jws, pm4ml-store-init, pm4ml-store-token]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pm4ml-bootstrap
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: pm4ml-bootstrap }
+subjects:
+  - { kind: ServiceAccount, name: pm4ml-bootstrap }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pm4ml-bootstrap-script
+data:
+  bootstrap.sh: |
+    #!/bin/sh
+    # Talks to the store over its HTTP API and to Kubernetes with kubectl.
+    set -eu
+    R="${RELEASE:?}"; A="${STORE_ADDR:?}"; KIND="${STORE:-vault}"
+    DFSP_ID="${DFSP_ID:?set DFSP_ID in the bootstrap ConfigMap (CA subject)}"
+    say() { echo "[bootstrap] $*"; }
+    k() { kubectl ${POD_NAMESPACE:+-n "$POD_NAMESPACE"} "$@"; }
+    rnd() { tr -dc 'a-f0-9' </dev/urandom | head -c "$1"; }
+    api() { # method path [json] -> body; fails on HTTP >= 400
+      if [ -n "${3:-}" ]; then
+        curl -sS -f -X "$1" -H "X-Vault-Token: ${TOKEN:-}" -H 'Content-Type: application/json' --data "$3" "$A/v1/$2"
+      else
+        curl -sS -f -X "$1" -H "X-Vault-Token: ${TOKEN:-}" "$A/v1/$2"
+      fi
+    }
+    sget() { # secret key -> value ("" if absent)
+      k get secret "$1" -o json 2>/dev/null | jq -r --arg k "$2" '.data[$k] // empty' | base64 -d 2>/dev/null || true
+    }
+    sput() { # name key=file...   create or replace
+      n="$1"; shift; args=""; for kv in "$@"; do args="$args --from-file=$kv"; done
+      # shellcheck disable=SC2086
+      k create secret generic "$n" $args --dry-run=client -o yaml | k apply -f - >/dev/null
+    }
+    T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+
+    say "waiting for the store at $A"
+    until curl -s -o /dev/null "$A/v1/sys/health?uninitcode=200&sealedcode=200&standbyok=true"; do sleep 3; done
+
+    TOKEN=""
+    if [ "$(api GET sys/init | jq -r .initialized)" != "true" ]; then
+      # The init output exists once. Prove it can be saved before creating it.
+      echo x > "$T/probe"
+      k create secret generic "$R-store-init" --from-file=probe="$T/probe" --dry-run=server -o name >/dev/null \
+        || { say "cannot write Secret $R-store-init: fix RBAC before initialising (nothing done)"; exit 1; }
+      if [ "$KIND" = openbao ]; then body='{"recovery_shares":5,"recovery_threshold":3}'
+      else body='{"secret_shares":5,"secret_threshold":3}'; fi
+      api PUT sys/init "$body" > "$T/init.json"
+      sput "$R-store-init" "init.json=$T/init.json"
+      say "initialised; keys and root token in Secret $R-store-init: move to escrow and delete"
+      if [ "$KIND" = vault ]; then
+        for i in 0 1 2; do api PUT sys/unseal "$(jq -c "{key: .keys_base64[$i]}" "$T/init.json")" >/dev/null; done
+      fi
+      TOKEN=$(jq -r .root_token "$T/init.json")
+      until [ "$(curl -s "$A/v1/sys/seal-status" | jq -r .sealed)" = "false" ]; do sleep 2; done
+    else
+      TOKEN="$(sget "$R-store-token" token)"
+      [ -n "$TOKEN" ] || TOKEN="$(sget "$R-store-init" init.json | jq -r '.root_token // empty' 2>/dev/null || true)"
+    fi
+
+    if [ -n "$TOKEN" ]; then
+      api GET sys/auth | jq -e '."approle/"' >/dev/null || api POST sys/auth/approle '{"type":"approle"}' >/dev/null
+      mounts=$(api GET sys/mounts)
+      echo "$mounts" | jq -e '."pki/"' >/dev/null || { api POST sys/mounts/pki '{"type":"pki"}' >/dev/null
+        api POST sys/mounts/pki/tune '{"max_lease_ttl":"97600h"}' >/dev/null; }
+      echo "$mounts" | jq -e '."secrets/"' >/dev/null || api POST sys/mounts/secrets '{"type":"kv","options":{"version":"1"}}' >/dev/null
+      # The DFSP CA: created once, never replaced (replacing it = onboarding again).
+      if [ -z "$(curl -s "$A/v1/pki/cert/ca" -H "X-Vault-Token: $TOKEN" | jq -r '.data.certificate // empty')" ]; then
+        api POST pki/root/generate/internal "$(jq -cn --arg cn "${CA_CN:-$DFSP_ID CA}" --arg o "$DFSP_ID" \
+          '{common_name:$cn, organization:$o, ttl:"97600h"}')" >/dev/null
+        say "created the DFSP CA: ${CA_CN:-$DFSP_ID CA}"
+      fi
+      for r in client-cert-role server-cert-role; do
+        api POST "pki/roles/$r" '{"allow_any_name":true,"allow_subdomains":true,"allow_localhost":true,"enforce_hostnames":false,"require_cn":false,"max_ttl":"97600h"}' >/dev/null
+      done
+      api PUT sys/policies/acl/management-api "$(jq -cn --arg p 'path "pki/*" { capabilities = ["create","read","update","delete","list","sudo"] }
+    path "secrets/*" { capabilities = ["create","read","update","delete","list"] }
+    path "sys/mounts" { capabilities = ["read"] }
+    path "sys/mounts/*" { capabilities = ["create","read","update"] }' '{policy:$p}')" >/dev/null
+      api PUT sys/policies/acl/store-backup "$(jq -cn --arg p 'path "sys/storage/raft/snapshot" { capabilities = ["read"] }' '{policy:$p}')" >/dev/null
+      api POST auth/approle/role/management-api '{"token_policies":["management-api"],"secret_id_ttl":"0","token_ttl":"1h","token_max_ttl":"24h"}' >/dev/null
+      api POST auth/approle/role/store-backup '{"token_policies":["store-backup"],"secret_id_ttl":"0","token_ttl":"15m","token_max_ttl":"1h"}' >/dev/null
+      for pair in "management-api:$R-vault-approle" "store-backup:$R-store-backup"; do
+        role=${pair%%:*}; sec=${pair#*:}
+        if [ -z "$(sget "$sec" secret-id)" ] || [ "${ROTATE_APPROLE:-}" = 1 ]; then
+          api GET "auth/approle/role/$role/role-id" | jq -j .data.role_id > "$T/role-id"
+          api POST "auth/approle/role/$role/secret-id" | jq -j .data.secret_id > "$T/secret-id"
+          sput "$sec" "role-id=$T/role-id" "secret-id=$T/secret-id"
+          say "wrote Secret $sec"
+        fi
+      done
+      # The chart needs a JWS key file at start; management-api replaces it.
+      if [ -z "$(sget "$R-jws" jws-signing.key)" ]; then
+        api POST pki/issue/server-cert-role '{"common_name":"placeholder","ttl":"1h"}' | jq -j .data.private_key > "$T/jws.key"
+        sput "$R-jws" "jws-signing.key=$T/jws.key"; say "wrote placeholder Secret $R-jws"
+      fi
+    else
+      say "store already initialised and no token given: store configuration skipped"
+    fi
+
+    # Runtime secrets, kept across runs.
+    ilp="$(sget "$R-runtime" ilp-secret)"; [ -n "$ilp" ] || ilp="$(rnd 64)"
+    printf '%s' "$ilp" > "$T/ilp"
+    if [ "${REDIS_HA:-}" = 1 ]; then
+      pw="$(sget "$R-redis-auth" auth)"
+      if [ -z "$pw" ]; then rnd 48 > "$T/pw"; sput "$R-redis-auth" "auth=$T/pw"; pw="$(cat "$T/pw")"; say "wrote Secret $R-redis-auth"; fi
+      printf 'redis://:%s@%s-redis-ha-haproxy:6379' "$pw" "$R" > "$T/url"
+    elif [ -n "${CACHE_URL_SECRET:-}" ]; then
+      sget "${CACHE_URL_SECRET%%/*}" "${CACHE_URL_SECRET#*/}" > "$T/url"
+    else
+      cur="$(sget "$R-runtime" cache-url)"; printf '%s' "${cur:-redis://$R-redis:6379}" > "$T/url"
+    fi
+    sput "$R-runtime" "ilp-secret=$T/ilp" "cache-url=$T/url"
+    if [ -z "$(k get secret "$R-tls" -o name 2>/dev/null)" ]; then
+      for f in hub-ca.pem client.pem client.key in-ca.pem server.pem server.key; do : > "$T/$f"; done
+      sput "$R-tls" "hub-ca.pem=$T/hub-ca.pem" "client.pem=$T/client.pem" "client.key=$T/client.key" \
+        "in-ca.pem=$T/in-ca.pem" "server.pem=$T/server.pem" "server.key=$T/server.key"
+      say "wrote placeholder Secret $R-tls"
+    fi
+    say "done"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pm4ml-bootstrap
+  labels: { app.kubernetes.io/name: store-bootstrap, app.kubernetes.io/instance: pm4ml }
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: store-bootstrap, app.kubernetes.io/instance: pm4ml }
+    spec:
+      serviceAccountName: pm4ml-bootstrap
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.31.4            # kubectl, curl, jq
+          command: ["sh", "/scripts/bootstrap.sh"]
+          envFrom:
+            - configMapRef: { name: pm4ml-bootstrap-config }
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - { name: RELEASE, value: pm4ml }
+            - { name: STORE_ADDR, value: "http://pm4ml-vault:8200" }
+            - { name: HOME, value: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: script, mountPath: /scripts }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: script
+          configMap: { name: pm4ml-bootstrap-script }
+        - name: tmp
+          emptyDir: {}

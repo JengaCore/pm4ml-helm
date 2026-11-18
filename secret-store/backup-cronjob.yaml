@@ -75,11 +75,12 @@ spec:
                 - secretRef: { name: pm4ml-backup-s3 }
               env:
                 - { name: HOME, value: /tmp }
+                - { name: PREFIX, value: "pm4ml-store/" }    # one prefix per release
               command:
                 - sh
                 - -ec
                 - |
-                  key="pm4ml/store-$(date -u +%Y%m%dT%H%M%SZ).snap"
+                  key="${PREFIX}store-$(date -u +%Y%m%dT%H%M%SZ).snap"
                   aws ${S3_ENDPOINT:+--endpoint-url "$S3_ENDPOINT"} s3 cp /out/store.snap "s3://$S3_BUCKET/$key"
                   echo "uploaded s3://$S3_BUCKET/$key"
               securityContext:
