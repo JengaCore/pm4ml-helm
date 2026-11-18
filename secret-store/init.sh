@@ -5,7 +5,7 @@
 # It runs from the operator's machine with `kubectl exec`, so the cluster
 # needs no extra RBAC.
 #
-#   NS=<namespace> STORE=vault|openbao ./secret-store/init.sh
+#   NS=<namespace> STORE=vault|openbao DFSP_ID=<dfsp id> ./secret-store/init.sh
 #
 # Output:
 #   ./<ns>-store-init.json   unseal/recovery keys + root token. Move it to your
@@ -22,6 +22,10 @@ case "$STORE" in
   *) echo "STORE must be vault or openbao" >&2; exit 1 ;;
 esac
 OUT="${OUT:-./${NS}-store-init.json}"
+# Subject of the DFSP CA created in pki/ (it signs the DFSP's callback server
+# certificate and the hub's client certificate for this DFSP).
+CA_CN="${CA_CN:-${DFSP_ID:-dfsp} CA}"
+CA_ORG="${CA_ORG:-${DFSP_ID:-dfsp}}"
 
 kx() { kubectl -n "$NS" exec -i "$POD" -c vault -- env "$ADDR_VAR=http://127.0.0.1:8200" "$@"; }
 # Pass the token on stdin, never on a command line.
@@ -58,6 +62,12 @@ if [ "$initialized" != "true" ]; then
     $BIN secrets enable -path=pki pki
     $BIN secrets tune -max-lease-ttl=97600h pki
     $BIN secrets enable -path=secrets -version=1 kv
+    # The DFSP's own CA. management-api starts by reading the CA already in
+    # pki/ (getPrebuiltCA) and uploads it to the hub's MCM; with none it
+    # uploads an empty CA and every certificate it issues later fails with
+    # \"no default issuer\". Compose's vault-init.sh creates it the same way.
+    $BIN write -field=certificate pki/root/generate/internal common_name=\"$CA_CN\" \
+      organization=\"$CA_ORG\" ttl=97600h >/dev/null
     for r in client-cert-role server-cert-role; do
       $BIN write pki/roles/\$r allow_any_name=true allow_subdomains=true allow_localhost=true \
         enforce_hostnames=false require_cn=false max_ttl=97600h >/dev/null
