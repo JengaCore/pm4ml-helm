@@ -76,7 +76,7 @@ in either of two ways:
   already in place. From OpenBao 2.7, KMS seals are external plugins, so pin the
   version you test with.
 
-Sizing: one replica with file storage on a 1 Gi volume, ~100 MiB RAM. It holds one
+Sizing: one replica with integrated storage (Raft) on a 1 Gi volume, ~100 MiB RAM. Back it up with `secret-store/backup.sh` (Raft snapshots). It holds one
 DFSP's CA and keys. HA is optional, because management-api is only on the
 onboarding and renewal path, not on the transfer path. With the store down,
 transfers keep running on the certificates already loaded.

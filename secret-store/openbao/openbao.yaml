@@ -21,9 +21,14 @@ data:
   config.hcl: |
     ui = false
     disable_mlock = true
-    storage "file" {
-      path = "/openbao/file"
+    # Integrated storage (Raft), single node: supports online snapshots, which
+    # is how the store is backed up (secret-store/backup.sh). The file backend
+    # it replaces had no consistent online backup.
+    storage "raft" {
+      path    = "/openbao/file"
+      node_id = "pm4ml-vault-0"
     }
+    cluster_addr = "http://127.0.0.1:8201"
     listener "tcp" {
       address     = "0.0.0.0:8200"
       tls_disable = true

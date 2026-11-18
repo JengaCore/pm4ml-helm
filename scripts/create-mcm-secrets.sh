@@ -6,6 +6,7 @@
 #   <release>-mcm      client-secret  the DFSP's client secret from the hub operator
 #                                 (Compose: AUTH_CLIENT_SECRET in Vault shared-secrets)
 #   <release>-runtime  ilp-secret     random, created once and kept across re-runs
+#                      cache-url      Redis URL (CACHE_URL=...; default redis://<release>-redis:6379)
 #   <release>-tls      empty placeholder files: management-api pushes the real
 #                  certificates over the control channel (Compose ships the
 #                  same empty files in docker/sdk-scheme-adapter/)
@@ -23,7 +24,22 @@ elif ! exists "$R"-mcm || [ "${ROTATE_CLIENT_SECRET:-}" = 1 ]; then
 fi
 [ -s "$tmp/cs" ] 2>/dev/null && apply "$R"-mcm --from-file=client-secret="$tmp/cs"
 
-exists "$R"-runtime || { openssl rand -hex 32 | tr -d '\n' > "$tmp/ilp"; apply "$R"-runtime --from-file=ilp-secret="$tmp/ilp"; }
+# <release>-runtime: the ILP secret (random once, then kept) and the Redis URL
+# (CACHE_URL_FILE, else CACHE_URL, else the in-namespace redis/redis.yaml).
+# The URL may hold a password or use rediss:// (TLS), so it lives here, not in values.
+write_runtime() {
+  ilp="$(kubectl -n "$NS" get secret "$R-runtime" -o jsonpath='{.data.ilp-secret}' 2>/dev/null | base64 -d || true)"
+  [ -n "$ilp" ] || ilp="${ILP_SECRET:-$(openssl rand -hex 32)}"
+  printf '%s' "$ilp" > "$tmp/ilp"
+  if [ -n "${CACHE_URL_FILE:-}" ]; then cp "$CACHE_URL_FILE" "$tmp/cache-url"
+  elif [ -n "${CACHE_URL:-}" ]; then printf '%s' "$CACHE_URL" > "$tmp/cache-url"
+  else
+    cur="$(kubectl -n "$NS" get secret "$R-runtime" -o jsonpath='{.data.cache-url}' 2>/dev/null | base64 -d || true)"
+    printf '%s' "${cur:-redis://$R-redis:6379}" > "$tmp/cache-url"
+  fi
+  apply "$R-runtime" --from-file=ilp-secret="$tmp/ilp" --from-file=cache-url="$tmp/cache-url"
+}
+write_runtime
 
 if ! exists "$R"-tls; then
   for f in hub-ca.pem client.pem client.key in-ca.pem server.pem server.key; do : > "$tmp/$f"; done

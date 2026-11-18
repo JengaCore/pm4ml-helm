@@ -36,8 +36,6 @@ done
 # Go/Envoy peers need a trailing newline after END CERTIFICATE.
 for f in "$TLS_DIR"/*.pem; do [ -z "$(tail -c1 "$f")" ] || echo >> "$f"; done
 
-ILP_SECRET="${ILP_SECRET:-$(kubectl -n "$NS" get secret "$R"-runtime -o jsonpath='{.data.ilp-secret}' 2>/dev/null | base64 -d || true)}"
-ILP_SECRET="${ILP_SECRET:-$(openssl rand -hex 32)}"
 
 apply() { kubectl -n "$NS" create secret generic "$@" --dry-run=client -o yaml | kubectl -n "$NS" apply -f -; }
 apply "$R"-tls \
@@ -50,6 +48,20 @@ apply "$R"-tls \
 apply "$R"-jws --from-file=jws-signing.key="$TLS_DIR/jws.key"
 # Through files, so the values do not show up in the process list.
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-printf '%s' "$ILP_SECRET" > "$tmp/ilp-secret"
-apply "$R"-runtime --from-file=ilp-secret="$tmp/ilp-secret"
+# <release>-runtime: the ILP secret (random once, then kept) and the Redis URL
+# (CACHE_URL_FILE, else CACHE_URL, else the in-namespace redis/redis.yaml).
+# The URL may hold a password or use rediss:// (TLS), so it lives here, not in values.
+write_runtime() {
+  ilp="$(kubectl -n "$NS" get secret "$R-runtime" -o jsonpath='{.data.ilp-secret}' 2>/dev/null | base64 -d || true)"
+  [ -n "$ilp" ] || ilp="${ILP_SECRET:-$(openssl rand -hex 32)}"
+  printf '%s' "$ilp" > "$tmp/ilp"
+  if [ -n "${CACHE_URL_FILE:-}" ]; then cp "$CACHE_URL_FILE" "$tmp/cache-url"
+  elif [ -n "${CACHE_URL:-}" ]; then printf '%s' "$CACHE_URL" > "$tmp/cache-url"
+  else
+    cur="$(kubectl -n "$NS" get secret "$R-runtime" -o jsonpath='{.data.cache-url}' 2>/dev/null | base64 -d || true)"
+    printf '%s' "${cur:-redis://$R-redis:6379}" > "$tmp/cache-url"
+  fi
+  apply "$R-runtime" --from-file=ilp-secret="$tmp/ilp" --from-file=cache-url="$tmp/cache-url"
+}
+write_runtime
 echo "Secrets $R-tls, $R-jws, $R-runtime are in namespace $NS."

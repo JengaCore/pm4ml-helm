@@ -9,6 +9,7 @@ changed is in [docs/REVIEW-2026-11.md](docs/REVIEW-2026-11.md).
 
 | Doc | |
 |---|---|
+| [docs/PRODUCTION.md](docs/PRODUCTION.md) | keys and backups, load balancer and mTLS, AWS / Azure / on-prem reference |
 | [docs/OPTIONS.md](docs/OPTIONS.md) | every default, its options, and where Helm differs from Compose |
 | [docs/SECRET-BACKENDS.md](docs/SECRET-BACKENDS.md) | Vault, OpenBao, managed and cloud options |
 | [docs/REVIEW-2026-11.md](docs/REVIEW-2026-11.md) | review of the ThitsaX repo |
@@ -87,6 +88,15 @@ NS=$NS STORE=openbao DFSP_ID=<dfsp id> ./secret-store/init.sh
 
 Same Service name, so the Helm values do not change.
 
+### Backups (both stores)
+
+```bash
+NS=$NS STORE=vault TOKEN_FILE=<root token file> ./secret-store/backup.sh save store.snap   # schedule it, ship off-cluster
+NS=$NS STORE=openbao ./scripts/export-identity.sh                                          # OUT=<dir>: break-glass copy of the keys
+```
+
+What to keep where, and how to restore: [docs/PRODUCTION.md](docs/PRODUCTION.md).
+
 ### After a restart (Vault only)
 
 ```bash
@@ -163,9 +173,14 @@ ISO 20022, GMD, mTLS both ways, JWS signed and validated, test backend `test-bac
 | Redis-HA master killed during 60 payments | **60/60** |
 | Single Redis crashed (AOF kept) during 60 payments | 13/60; SDKs reconnected by themselves. 3 transfers stayed `RESERVED` and expired: aborted, no money moved, positions balanced, nothing reserved |
 | OpenBao process killed | unsealed itself, management-api reconnected |
+| Vault process killed (sealed) | payments continued (10/10) while sealed; `unseal.sh`, management-api reconnected |
+| Store lost (pod deleted with its data), restored from a Raft snapshot (`secret-store/backup.sh`) | OpenBao: same CA, no new enrolment in MCM, management-api resumed. Vault 1.13.3 on Raft: starts, snapshot saved |
+| Store lost **without** a backup | the DFSP had to onboard again (new CA, hub signs again), and the hub's lookup service kept the old CA: callbacks failed (`1001`) until its pods restart. See docs/PRODUCTION.md |
+| Static mode, identity exported from the store (`scripts/export-identity.sh`) into Kubernetes Secrets, no management-api | 20/20 sent and 20/20 received |
+| Redis-HA with AUTH, URL with password in Secret `<release>-runtime` | 20/20 each way; unauthenticated access refused |
 | Metrics on :4004 (`mojaloop_connector_outbound_*` counters and latency histograms, event-loop lag) | ✓ |
 
-Not covered yet: static mode end to end, a run on EKS/AKS, the redis-ha values with persistence/NetworkPolicy (rendered, failover tested without persistence because the test cluster's volume quota is full), structured JSON logs (`LOG_IS_JSON_OUTPUT` is read but not used by SDK v24.19.3).
+Not covered yet: a run on EKS/AKS, a managed Redis with TLS (`rediss://`), the redis-ha values with persistence/NetworkPolicy (rendered, failover tested without persistence because the test cluster's volume quota is full), structured JSON logs (`LOG_IS_JSON_OUTPUT` is read but not used by SDK v24.19.3).
 
 ## Operations
 
