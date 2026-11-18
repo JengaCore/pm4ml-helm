@@ -22,6 +22,24 @@ Azure or on-premises. Each recommendation says whether it was tested.
 So two things must survive anything: **the secret store's data** and **the
 key that opens it**. Kept in different places.
 
+```mermaid
+flowchart LR
+    store[("Secret store<br/>persistent encrypted volume")]
+    store -- "scheduled snapshot<br/>(backup-only access)" --> obj[("Object storage<br/>versioned, locked")]
+    store -- "identity export<br/>(store's own read access)" --> sm[("Secrets manager<br/>break-glass copy")]
+    unseal[("Unseal material<br/>custodians or KMS")]
+    obj -. "restore: same CA,<br/>no new onboarding" .-> store
+    unseal -. "opens" .-> store
+    sm -. "static mode<br/>if the store is down" .-> pm["Payment manager"]
+```
+
+```mermaid
+flowchart TB
+    lost["Store volume lost"] --> q{"Snapshot<br/>available?"}
+    q -- "yes" --> r["Restore snapshot<br/>same CA and keys"] --> ok["Payments resume<br/>nothing to do on the hub"]
+    q -- "no" --> n["New store, new CA"] --> h["Hub signs a new request,<br/>peers learn a new key"] --> w["Switch services must<br/>reload the new CA<br/>(failed lookups until they did)"]
+```
+
 ## Keeping the store's data
 
 1. **Persistent volume.** `secret-store/vault` and `secret-store/openbao` use a
@@ -132,6 +150,71 @@ Settings that matter:
 
 Validated on 2026-11-18 with plain L4 `LoadBalancer` Services
 (`networking/loadbalancer.yaml`) on two DFSPs against sbx UAT.
+
+## Idempotency: the core connector's part
+
+The SDK de-duplicates per `transferId`, not per `homeTransactionId` (tested:
+the same `homeTransactionId` twice is two payments). After any error, ask for
+the transfer's real state before retrying:
+
+```mermaid
+sequenceDiagram
+    participant CC as Core connector
+    participant PM as Payment manager (SDK)
+    participant SW as Switch
+    CC->>PM: POST /transfers (homeTransactionId H)
+    PM->>SW: lookup, quote, transfer (transferId T)
+    Note over PM,SW: the answer is lost:<br/>timeout, crash, network
+    PM-->>CC: error
+    CC->>PM: GET /transfers/T
+    PM->>SW: GET /transfers/T
+    SW-->>PM: COMMITTED / ABORTED / RESERVED
+    PM-->>CC: real state
+    Note over CC: retry only if ABORTED.<br/>A second POST with H would be a second payment.
+```
+
+## Onboarding sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Op as Hub operator
+    participant MCM as MCM
+    participant KC as Keycloak (dfsps)
+    participant PM as Payment manager<br/>(management-api)
+    participant R as Hub reconciler
+    Op->>MCM: add the DFSP (id, currency)
+    MCM->>KC: create its client
+    Op-->>PM: client id + secret (secure channel)
+    PM->>KC: token
+    PM->>MCM: DFSP CA, CSR, JWS key, callback URL, egress IPs
+    PM->>MCM: sign the hub's client CSR
+    Op->>MCM: sign the DFSP's CSR
+    PM->>MCM: collect the signed certificate
+    R->>MCM: read the DFSP
+    R->>R: ledger participant, callbacks, egress mutual TLS
+```
+
+## When a DFSP's CA changes: a note for the switch
+
+Observed on sbx UAT (2026-11-18): after `pm4mlhelm01` was onboarded again with
+a new CA, the hub reconciler updated `dfsp-egress-certs` and most switch
+sidecars reloaded it (their istio-agent logged `read certificate from file`
+for the new files), but the lookup service's sidecar kept verifying our
+callback server certificate against the old CA (`CERTIFICATE_VERIFY_FAILED`,
+`1001` for the payer). A restart of `mojaloop-account-lookup-service` fixed it:
+60/60 payments afterwards. The stale pod was gone before its agent logs could
+be read, so the cause is not proven.
+
+For the switch (not changed here):
+- after the reconciler rewrites a DFSP's CA, restart the egress consumers
+  (lookup service, quoting, ml-api-adapter notification), or check that each
+  sidecar serves the new CA (`istioctl proxy-config secret`);
+- or move the DestinationRules to `credentialName` (SDS from a Secret per
+  DFSP), which istiod pushes on every Secret change.
+
+For the DFSP: the CA must not change in normal operation. That is what the
+backups above are for.
 
 ## Reference: fully on AWS
 

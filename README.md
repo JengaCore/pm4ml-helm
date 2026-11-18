@@ -175,7 +175,7 @@ ISO 20022, GMD, mTLS both ways, JWS signed and validated, test backend `test-bac
 | OpenBao process killed | unsealed itself, management-api reconnected |
 | Vault process killed (sealed) | payments continued (10/10) while sealed; `unseal.sh`, management-api reconnected |
 | Store lost (pod deleted with its data), restored from a Raft snapshot (`secret-store/backup.sh`) | OpenBao: same CA, no new enrolment in MCM, management-api resumed. Vault 1.13.3 on Raft: starts, snapshot saved |
-| Store lost **without** a backup | the DFSP had to onboard again (new CA, hub signs again), and the hub's lookup service kept the old CA: callbacks failed (`1001`) until its pods restart. See docs/PRODUCTION.md |
+| Store lost **without** a backup | the DFSP had to onboard again (new CA, hub signs again), and the hub's lookup service kept the old CA: callbacks failed (`1001`). After a restart of the lookup service: 30 + 30 payments, all completed. See docs/PRODUCTION.md, "When a DFSP's CA changes" |
 | Static mode, identity exported from the store (`scripts/export-identity.sh`) into Kubernetes Secrets, no management-api | 20/20 sent and 20/20 received |
 | Redis-HA from `redis/values-redis-ha.yaml` (AUTH from `REDIS_HA=1`, NetworkPolicies on Redis and HAProxy) | 20/20 each way; unauthenticated access refused; another DFSP's pod blocked at HAProxy |
 | Backup with the snapshot-only AppRole (no root token) | snapshot saved; the same AppRole gets `403` on the DFSP's keys |
