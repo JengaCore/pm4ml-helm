@@ -2,6 +2,7 @@
 # DEFAULT (MCM) mode: creates the Secrets PM4ML needs before `helm install`.
 #
 #   NS=<namespace> ./scripts/create-mcm-secrets.sh     # prompts for the client secret
+#   NO_CLIENT_SECRET=1: everything except the client secret (before the hub has issued it)
 #
 #   <release>-mcm      client-secret  the DFSP's client secret from the hub operator
 #                                 (Compose: AUTH_CLIENT_SECRET in Vault shared-secrets)
@@ -19,7 +20,7 @@ apply() { kubectl -n "$NS" create secret generic "$@" --dry-run=client -o yaml |
 exists() { kubectl -n "$NS" get secret "$1" >/dev/null 2>&1; }
 
 if [ -n "${CLIENT_SECRET_FILE:-}" ]; then cp "$CLIENT_SECRET_FILE" "$tmp/cs"
-elif ! exists "$R"-mcm || [ "${ROTATE_CLIENT_SECRET:-}" = 1 ]; then
+elif [ "${NO_CLIENT_SECRET:-}" != 1 ] && { ! exists "$R"-mcm || [ "${ROTATE_CLIENT_SECRET:-}" = 1 ]; }; then
   read -rsp "Client secret from the hub operator: " cs; echo; printf '%s' "$cs" > "$tmp/cs"; unset cs
 fi
 [ -s "$tmp/cs" ] 2>/dev/null && apply "$R"-mcm --from-file=client-secret="$tmp/cs"
@@ -58,4 +59,4 @@ if ! exists "$R"-tls; then
   apply "$R"-tls "${args[@]}"
 fi
 exists "$R"-jws || { openssl genrsa -out "$tmp/jws.key" 2048 2>/dev/null; apply "$R"-jws --from-file=jws-signing.key="$tmp/jws.key"; }
-kubectl -n "$NS" get secret "$R"-mcm "$R"-runtime "$R"-tls "$R"-jws
+kubectl -n "$NS" get secret "$R"-mcm "$R"-runtime "$R"-tls "$R"-jws --ignore-not-found

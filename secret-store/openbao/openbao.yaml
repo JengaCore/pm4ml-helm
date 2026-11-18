@@ -120,5 +120,7 @@ spec:
     - from:
         - podSelector:
             matchLabels: { app.kubernetes.io/name: management-api, app.kubernetes.io/instance: pm4ml }
+        - podSelector:              # secret-store/backup-cronjob.yaml
+            matchLabels: { app.kubernetes.io/name: store-backup, app.kubernetes.io/instance: pm4ml }
       ports:
         - { port: 8200 }
