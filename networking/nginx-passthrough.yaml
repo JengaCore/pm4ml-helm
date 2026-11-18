@@ -1,0 +1,24 @@
+# Same as istio-passthrough.yaml, for ingress-nginx. The controller must run
+# with --enable-ssl-passthrough (off by default).
+# AWS: an NLB with a TCP listener on 443 to this Service also works.
+# AKS: Azure Load Balancer (L4) also works. Application Gateway does not pass
+# client certificates through, so do not use it here.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pm4ml-callbacks
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ml-connect.CHANGE-ME-pm4ml-domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pm4ml-sdk-scheme-adapter-api-svc
+                port: { number: 4000 }

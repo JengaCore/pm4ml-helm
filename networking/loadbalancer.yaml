@@ -1,0 +1,20 @@
+# Callback host through a plain L4 load balancer: works on any cloud
+# (AWS NLB, Azure Load Balancer, Linode NodeBalancer, Infomaniak/OpenStack
+# Octavia) and needs no ingress controller support for TLS passthrough.
+# Point ml-connect.<your domain> at the EXTERNAL-IP it gets. It costs one public IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pm4ml-callbacks
+  annotations: {}
+    # AWS:   service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # Azure: service.beta.kubernetes.io/azure-load-balancer-internal: "false"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local       # keeps the hub's source IP visible
+  # loadBalancerSourceRanges: [ "<hub egress IP>/32" ]   # recommended
+  selector:
+    app.kubernetes.io/name: sdk-scheme-adapter-api-svc
+    app.kubernetes.io/instance: pm4ml
+  ports:
+    - { name: tls-fspiop, port: 443, targetPort: 4000 }

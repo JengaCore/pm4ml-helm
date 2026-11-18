@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: management-api
+spec:
+  template:
+    spec:
+      automountServiceAccountToken: false
+      volumes:
+        - name: vault-auth-data
+          secret:
+            secretName: pm4ml-vault-approle   # written by secret-store/init.sh
+            defaultMode: 0400
+      containers:
+        - name: management-api
+          volumeMounts:
+            - name: vault-auth-data
+              mountPath: /vault/auth-data
+              readOnly: true
