@@ -1,0 +1,7 @@
+# keys, certificates and store init output: never commit
+tls/
+*.key
+*-store-init.json
+helm-values/values-jws-peers.yaml
+helm-values/values-local*.yaml
+.vscode/
