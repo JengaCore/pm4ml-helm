@@ -114,6 +114,6 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchLabels: { app.kubernetes.io/name: management-api }
+            matchLabels: { app.kubernetes.io/name: management-api, app.kubernetes.io/instance: pm4ml }
       ports:
         - { port: 8200 }

@@ -15,13 +15,14 @@
 set -euo pipefail
 NS="${NS:?set NS}"
 STORE="${STORE:-vault}"
-POD="${POD:-pm4ml-vault-0}"
+R="${RELEASE:-pm4ml}"   # Helm release name
+POD="${POD:-$R-vault-0}"
 case "$STORE" in
   vault)   BIN=vault; ADDR_VAR=VAULT_ADDR ;;
   openbao) BIN=bao;   ADDR_VAR=BAO_ADDR ;;
   *) echo "STORE must be vault or openbao" >&2; exit 1 ;;
 esac
-OUT="${OUT:-./${NS}-store-init.json}"
+OUT="${OUT:-./${NS}-${R}-store-init.json}"
 # Subject of the DFSP CA created in pki/ (it signs the DFSP's callback server
 # certificate and the hub's client certificate for this DFSP).
 CA_CN="${CA_CN:-${DFSP_ID:-dfsp} CA}"
@@ -93,8 +94,8 @@ ROLE_ID=$(kxt "$ROOT" "$BIN read -field=role_id auth/approle/role/pm4ml-manageme
 SECRET_ID=$(kxt "$ROOT" "$BIN write -f -field=secret_id auth/approle/role/pm4ml-management-api/secret-id")
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 printf '%s' "$ROLE_ID" > "$tmp/role-id"; printf '%s' "$SECRET_ID" > "$tmp/secret-id"
-kubectl -n "$NS" create secret generic pm4ml-vault-approle \
+kubectl -n "$NS" create secret generic "$R-vault-approle" \
   --from-file=role-id="$tmp/role-id" --from-file=secret-id="$tmp/secret-id" \
   --dry-run=client -o yaml | kubectl -n "$NS" apply -f - >/dev/null
-echo "Secret pm4ml-vault-approle written. Restart management-api if it is running:"
-echo "  kubectl -n $NS rollout restart deploy/pm4ml-management-api"
+echo "Secret $R-vault-approle written. Restart management-api if it is running:"
+echo "  kubectl -n $NS rollout restart deploy/$R-management-api"

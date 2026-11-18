@@ -18,6 +18,7 @@
 # transfers quoted under an old secret cannot complete under a new one.
 set -euo pipefail
 NS="${NS:?set NS}"
+R="${RELEASE:-pm4ml}"   # Helm release name; Secrets are named <release>-*
 TLS_DIR="${TLS_DIR:?set TLS_DIR}"
 
 for f in hub-ca.pem client.pem client.key in-ca.pem server.pem server.key jws.key; do
@@ -35,20 +36,20 @@ done
 # Go/Envoy peers need a trailing newline after END CERTIFICATE.
 for f in "$TLS_DIR"/*.pem; do [ -z "$(tail -c1 "$f")" ] || echo >> "$f"; done
 
-ILP_SECRET="${ILP_SECRET:-$(kubectl -n "$NS" get secret pm4ml-runtime -o jsonpath='{.data.ilp-secret}' 2>/dev/null | base64 -d || true)}"
+ILP_SECRET="${ILP_SECRET:-$(kubectl -n "$NS" get secret "$R"-runtime -o jsonpath='{.data.ilp-secret}' 2>/dev/null | base64 -d || true)}"
 ILP_SECRET="${ILP_SECRET:-$(openssl rand -hex 32)}"
 
 apply() { kubectl -n "$NS" create secret generic "$@" --dry-run=client -o yaml | kubectl -n "$NS" apply -f -; }
-apply pm4ml-tls \
+apply "$R"-tls \
   --from-file=hub-ca.pem="$TLS_DIR/hub-ca.pem" \
   --from-file=client.pem="$TLS_DIR/client.pem" \
   --from-file=client.key="$TLS_DIR/client.key" \
   --from-file=in-ca.pem="$TLS_DIR/in-ca.pem" \
   --from-file=server.pem="$TLS_DIR/server.pem" \
   --from-file=server.key="$TLS_DIR/server.key"
-apply pm4ml-jws --from-file=jws-signing.key="$TLS_DIR/jws.key"
+apply "$R"-jws --from-file=jws-signing.key="$TLS_DIR/jws.key"
 # Through files, so the values do not show up in the process list.
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 printf '%s' "$ILP_SECRET" > "$tmp/ilp-secret"
-apply pm4ml-runtime --from-file=ilp-secret="$tmp/ilp-secret"
-echo "Secrets pm4ml-tls, pm4ml-jws, pm4ml-runtime are in namespace $NS."
+apply "$R"-runtime --from-file=ilp-secret="$tmp/ilp-secret"
+echo "Secrets $R-tls, $R-jws, $R-runtime are in namespace $NS."
