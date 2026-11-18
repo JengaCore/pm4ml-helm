@@ -30,7 +30,8 @@ deliberately differs from Compose.
 | Redis persistence | none (`FLUSHALL` is a recovery step) | AOF every second | A restart must not orphan in-flight transfers into hub timeouts |
 | App secrets | Vault `shared-secrets/pm4ml` (KV v2), rendered by vault-agent into an env file | Kubernetes Secrets (`pm4ml-mcm`, `pm4ml-runtime`) | Kubernetes already has a secret object; no agent needed |
 | Vault root token | kept in `/vault/initial-keys` | in `<ns>-store-init.json`, to move to escrow | Same contents, one explicit hand-off |
-| Store init | `init-vault` container | `secret-store/init.sh` via `kubectl exec` | No in-cluster RBAC needed |
+| Store init | `init-vault` container | `secret-store/init.sh` via `kubectl exec` | No in-cluster RBAC needed. Like Compose it creates the DFSP CA in `pki/` (management-api reads it as its "prebuilt CA"; without it, it uploads an empty CA and every certificate fails with `no default issuer`) |
+| OpenBao JSON limit | n/a (Vault) | `max_request_json_strings = 100000` | OpenBao refuses management-api's state document with its default of 1000 |
 | Placeholder TLS/JWS files | empty files in `docker/sdk-scheme-adapter/` | Secrets `pm4ml-tls` (empty) and `pm4ml-jws` (throwaway), from `scripts/create-mcm-secrets.sh` | The SDK refuses to start without the files; management-api replaces them |
 | `ENABLE_TEST_FEATURES` | true | true | Kept. Port 4002 is never published |
 

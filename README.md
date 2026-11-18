@@ -54,7 +54,7 @@ helm repo add pm4ml https://pm4ml.github.io/mojaloop-payment-manager-helm/repo &
 # 1. Redis and the secret store
 kubectl -n $NS apply -f redis/redis.yaml
 kubectl -n $NS apply -f secret-store/vault/vault.yaml
-NS=$NS STORE=vault ./secret-store/init.sh     # writes ./$NS-store-init.json: move it to escrow
+NS=$NS STORE=vault DFSP_ID=<dfsp id> ./secret-store/init.sh   # writes ./$NS-store-init.json: move it to escrow
 
 # 2. Secrets (prompts for the client secret)
 NS=$NS ./scripts/create-mcm-secrets.sh
@@ -82,7 +82,7 @@ Secrets and reads env values from them, which the charts cannot do.
 kubectl -n $NS create secret generic pm4ml-openbao-seal --from-file=unseal.key=<(openssl rand 32)
 kubectl -n $NS get secret pm4ml-openbao-seal -o yaml > openbao-seal-BACKUP.yaml   # to escrow
 kubectl -n $NS apply -f secret-store/openbao/openbao.yaml
-NS=$NS STORE=openbao ./secret-store/init.sh
+NS=$NS STORE=openbao DFSP_ID=<dfsp id> ./secret-store/init.sh
 ```
 
 Same Service name, so the Helm values do not change.
@@ -135,7 +135,8 @@ More failure modes: switch-iac `docs/DFSP-ONBOARDING.md`.
 | OpenBao 2.6.5: same, plus a process restart that unsealed itself | ✓ 2026-11-18 |
 | management-api reaches the sbx UAT hub's Keycloak and MCM | ✓ (`401`: DFSP not admitted, as expected) |
 | SDK connects to management-api's control channel | ✓ |
-| Admission, signing, callbacks, transfers in both directions with JWS on | **pending**: needs a DFSP admitted on a hub |
+| sbx PROD (MCM + Keycloak, no Ory), OpenBao: DFSP added in MCM, PM4ML enrolled with its client id/secret (CA, CSR, JWS key, endpoints), hub signed the CSR, SDK up with MCM-issued certificates, callback host serving the MCM-issued server certificate | ✓ 2026-11-18 |
+| Ledger wiring and transfers | **pending** (hub reconciler not yet on sbx PROD) |
 | EKS / AKS run | pending |
 
 ## Operations

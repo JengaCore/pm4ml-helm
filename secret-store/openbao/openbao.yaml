@@ -27,6 +27,10 @@ data:
     listener "tcp" {
       address     = "0.0.0.0:8200"
       tls_disable = true
+      # management-api stores its whole state machine as one JSON document.
+      # OpenBao's default limit (1000 strings per request) refuses it with
+      # "refused JSON input due to high complexity"; Vault has no such limit.
+      max_request_json_strings = 100000
     }
     seal "static" {
       current_key_id = "pm4ml-1"
