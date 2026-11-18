@@ -34,7 +34,7 @@ deliberately differs from Compose.
 | OpenBao JSON limit | n/a (Vault) | `max_request_json_strings = 100000` | OpenBao refuses management-api's state document with its default of 1000 |
 | Placeholder TLS/JWS files | empty files in `docker/sdk-scheme-adapter/` | Secrets `pm4ml-tls` (empty) and `pm4ml-jws` (throwaway), from `scripts/create-mcm-secrets.sh` | The SDK refuses to start without the files; management-api replaces them |
 | `ENABLE_TEST_FEATURES` | true | true | Kept. Port 4002 is never published |
-| SDK replicas | 1 container | 2, PDB, soft anti-affinity, preStop + 60 s grace | Production: survives a node or pod loss without failing payments in flight (validated) |
+| SDK replicas | 1 container | 2, PDB, soft anti-affinity, preStop + 60 s grace | Production: a graceful pod stop (drain, rollout) fails no payment in flight (validated). On a node loss or crash, payments in flight can be reported failed yet committed: the core connector checks `GET /transfers/{transferId}` before treating them as failed |
 | Redis for production | single container | `redis/values-redis-ha.yaml` recommended | A Redis crash fails payments in flight; Sentinel failover did not (validated) |
 | Resources | none | requests/limits on SDK, management-api, core connector | One noisy pod cannot starve the others |
 | Several DFSPs per namespace | n/a | `RELEASE=` / `scripts/for-release.sh` | Names follow the Helm release |

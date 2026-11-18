@@ -55,9 +55,9 @@ helm repo add pm4ml https://pm4ml.github.io/mojaloop-payment-manager-helm/repo &
 # 1. Redis (production: redis/values-redis-ha.yaml, see the checklist) and the secret store
 kubectl -n $NS apply -f redis/redis.yaml
 kubectl -n $NS apply -f secret-store/vault/vault.yaml
-NS=$NS STORE=vault DFSP_ID=<dfsp id> ./secret-store/init.sh   # writes ./$NS-store-init.json: move it to escrow
+NS=$NS STORE=vault DFSP_ID=<dfsp id> ./secret-store/init.sh   # writes ./$NS-pm4ml-store-init.json: move it to escrow
 
-# 2. Secrets (prompts for the client secret)
+# 2. Secrets (prompts for the client secret). With redis/values-redis-ha.yaml: REDIS_HA=1
 NS=$NS ./scripts/create-mcm-secrets.sh
 
 # 3. Values: copy, fill every CHANGE ME
@@ -91,8 +91,8 @@ Same Service name, so the Helm values do not change.
 ### Backups (both stores)
 
 ```bash
-NS=$NS STORE=vault TOKEN_FILE=<root token file> ./secret-store/backup.sh save store.snap   # schedule it, ship off-cluster
-NS=$NS STORE=openbao ./scripts/export-identity.sh                                          # OUT=<dir>: break-glass copy of the keys
+NS=$NS STORE=vault ./secret-store/backup.sh save store.snap                  # snapshot-only AppRole; schedule it, ship off-cluster
+NS=$NS STORE=vault OUT=/secure/dir ./scripts/export-identity.sh              # break-glass copy: /secure/dir will hold PRIVATE KEYS
 ```
 
 What to keep where, and how to restore: [docs/PRODUCTION.md](docs/PRODUCTION.md).
@@ -142,7 +142,7 @@ More failure modes: switch-iac `docs/DFSP-ONBOARDING.md`.
 |---|---|---|
 | SDK replicas | 2, soft anti-affinity, PodDisruptionBudget `minAvailable: 1` | Replicas share state in Redis: any replica takes any callback |
 | SDK stop | `preStop: sleep 35`, 60 s grace | Payments in flight finish before the pod stops (validated: 0 failures while pods were killed under load) |
-| Redis | **`redis/values-redis-ha.yaml`** (3 Redis + Sentinel + HAProxy, AOF, PVC) | The single `redis/redis.yaml` is a single point of failure: a Redis crash failed 47 of 60 payments in flight |
+| Redis | **`redis/values-redis-ha.yaml`** (3 Redis + Sentinel + HAProxy, AOF, PVC, AUTH, NetworkPolicies) with `REDIS_HA=1` on `create-mcm-secrets.sh` | The single `redis/redis.yaml` is a single point of failure: a Redis crash failed 47 of 60 payments in flight |
 | Secret store | Vault (= Compose) or OpenBao (unseals itself) | management-api is off the payment path: payments continue while it or the store is down (validated) |
 | Resources | requests/limits on SDK, management-api, core connector | Sized from the load test; one SDK replica uses at most one core |
 | Metrics | `prometheus.io/scrape` on the SDK (port 4004), `monitoring/podmonitor.yaml` | Alert examples in that file |
@@ -167,7 +167,7 @@ ISO 20022, GMD, mTLS both ways, JWS signed and validated, test backend `test-bac
 | Same `homeTransactionId` sent twice | **two payments** (positions moved twice): see Idempotency above |
 | `acceptQuote` replayed on a completed transfer | no new payment, positions unchanged |
 | Load: 3 SDK replicas per DFSP, 150 + 150 payments, both directions at once, 20 concurrent | 300/300, p50 2 s, p95 4 s, ledger exact; callbacks spread over all replicas |
-| One SDK pod per DFSP killed during 100 + 100 payments, without graceful stop | 196/200; one payment reported failed was committed. Fixed by the preStop hook: |
+| One SDK pod per DFSP killed during 100 + 100 payments, without graceful stop | 196/200; one payment reported failed was committed. This is also what a node loss or a crash looks like (preStop does not run then): the core connector must check `GET /transfers/{transferId}` before treating a payment as failed. For graceful stops (drain, rollout), the preStop hook fixes it: |
 | Same, with preStop + 60 s grace | **200/200, ledger exact** |
 | Both management-api scaled to 0, 30 + 30 payments | 60/60 |
 | Redis-HA master killed during 60 payments | **60/60** |
@@ -177,7 +177,9 @@ ISO 20022, GMD, mTLS both ways, JWS signed and validated, test backend `test-bac
 | Store lost (pod deleted with its data), restored from a Raft snapshot (`secret-store/backup.sh`) | OpenBao: same CA, no new enrolment in MCM, management-api resumed. Vault 1.13.3 on Raft: starts, snapshot saved |
 | Store lost **without** a backup | the DFSP had to onboard again (new CA, hub signs again), and the hub's lookup service kept the old CA: callbacks failed (`1001`) until its pods restart. See docs/PRODUCTION.md |
 | Static mode, identity exported from the store (`scripts/export-identity.sh`) into Kubernetes Secrets, no management-api | 20/20 sent and 20/20 received |
-| Redis-HA with AUTH, URL with password in Secret `<release>-runtime` | 20/20 each way; unauthenticated access refused |
+| Redis-HA from `redis/values-redis-ha.yaml` (AUTH from `REDIS_HA=1`, NetworkPolicies on Redis and HAProxy) | 20/20 each way; unauthenticated access refused; another DFSP's pod blocked at HAProxy |
+| Backup with the snapshot-only AppRole (no root token) | snapshot saved; the same AppRole gets `403` on the DFSP's keys |
+| `init.sh` re-run on an initialised store | CA kept, backup AppRole added, secret-ids rotated; without `DFSP_ID` it stops |
 | Metrics on :4004 (`mojaloop_connector_outbound_*` counters and latency histograms, event-loop lag) | ✓ |
 
 Not covered yet: a run on EKS/AKS, a managed Redis with TLS (`rediss://`), the redis-ha values with persistence/NetworkPolicy (rendered, failover tested without persistence because the test cluster's volume quota is full), structured JSON logs (`LOG_IS_JSON_OUTPUT` is read but not used by SDK v24.19.3).

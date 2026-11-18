@@ -30,8 +30,12 @@ key that opens it**. Kept in different places.
 2. **Raft snapshots off-cluster.** The stores use Raft, which takes consistent
    online snapshots:
    ```bash
-   NS=$NS RELEASE=$R STORE=openbao TOKEN_FILE=... ./secret-store/backup.sh save store-$(date +%F).snap
+   NS=$NS RELEASE=$R STORE=openbao ./secret-store/backup.sh save store-$(date +%F).snap
    ```
+   It logs in with the snapshot-only AppRole that `init.sh` creates (Secret
+   `<release>-store-backup`, policy: read `sys/storage/raft/snapshot`, nothing
+   else; tested: it gets `403` on the DFSP's keys). No root token is needed, so
+   the root token goes to escrow as `init.sh` says.
    Run it on a schedule (CronJob or the platform's backup job) and ship the file
    to object storage with versioning and object lock. **Tested:** snapshot,
    pod deleted with its data, empty store initialised (`INIT_ONLY=1`),
@@ -51,6 +55,25 @@ key that opens it**. Kept in different places.
 Never `kubectl delete pvc` on the store to "start clean": that is the
 "onboard again" row above.
 
+### Upgrading a store from file to Raft
+
+Stores created before the Raft change keep the file backend's data on the
+volume (`core/`, `logical/`, `sys/`). Raft does not read it: the store would
+come up uninitialised, and initialising it would mean onboarding again.
+`init.sh` refuses to initialise such a volume. To upgrade:
+
+1. Back up the identity first: `OUT=/secure/dir ./scripts/export-identity.sh`.
+2. Stop the store (`kubectl scale statefulset <release>-vault --replicas=0`) and
+   management-api.
+3. Run the offline migration in a one-off pod that mounts the volume, with a
+   `migrate.hcl` naming `storage_source "file" { path = ".../file" }` and
+   `storage_destination "raft" { path = ".../file/raft-data" node_id = "pm4ml-vault-0" }`,
+   then `vault operator migrate -config=migrate.hcl` (`bao operator migrate` for OpenBao).
+4. Point the Raft `path` in the store's ConfigMap at `.../file/raft-data`, start the store, unseal it with
+   the existing keys, and check the CA fingerprint is unchanged.
+
+Not run in the validation: the test stores were created on Raft.
+
 ## Choosing the pieces
 
 | Piece | Option | Tested | Use when |
@@ -61,7 +84,7 @@ Never `kubectl delete pvc` on the store to "start clean": that is the
 | | Managed Vault (HCP) | — | No store to operate |
 | | None: static mode, Kubernetes Secrets | ✓ send/receive | Pilots; manual renewal; identity kept in a secrets manager |
 | Redis | in-cluster `redis/redis.yaml` (single) | ✓ | Test only: a crash failed 47 of 60 payments in flight |
-| | in-cluster `redis/values-redis-ha.yaml` (Sentinel + HAProxy) | ✓ master killed under load: 60/60; with AUTH from the Secret | Production on any cluster |
+| | in-cluster `redis/values-redis-ha.yaml` (Sentinel + HAProxy, AUTH, NetworkPolicies on Redis and HAProxy) | ✓ master killed under load: 60/60; AUTH on; another DFSP's pod cannot reach it | Production on any cluster |
 | | Managed: ElastiCache / Azure Cache, primary endpoint, TLS + AUTH | — | Cloud production; use the non-cluster mode (the SDK uses a single-node client) |
 
 Turning on Redis AUTH on a running redis-ha does not roll: the new replica
