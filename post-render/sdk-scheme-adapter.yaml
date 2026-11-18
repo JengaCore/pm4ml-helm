@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-scheme-adapter-api-svc
+spec:
+  template:
+    spec:
+      automountServiceAccountToken: false
+      volumes:
+        - name: pm4ml-tls
+          secret:
+            secretName: pm4ml-tls      # empty placeholders in MCM mode
+            defaultMode: 0400
+      containers:
+        - name: sdk-scheme-adapter-api-svc
+          volumeMounts:
+            - name: pm4ml-tls
+              mountPath: /secrets/tls
+              readOnly: true
+          env:
+            - name: ILP_SECRET
+              value: null
+              valueFrom:
+                secretKeyRef: { name: pm4ml-runtime, key: ilp-secret }
+            - name: OAUTH_CLIENT_SECRET
+              value: null
+              valueFrom:
+                secretKeyRef: { name: pm4ml-mcm, key: client-secret, optional: true }
