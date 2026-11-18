@@ -38,6 +38,12 @@ spec:
               value: null
               valueFrom:
                 secretKeyRef: { name: pm4ml-runtime, key: ilp-secret }
+            # Redis URL from the Secret: it may carry a password (redis://:pw@host)
+            # or TLS (rediss://, e.g. ElastiCache with in-transit encryption).
+            - name: CACHE_URL
+              value: null
+              valueFrom:
+                secretKeyRef: { name: pm4ml-runtime, key: cache-url }
             - name: OAUTH_CLIENT_SECRET
               value: null
               valueFrom:

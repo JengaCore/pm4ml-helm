@@ -12,6 +12,7 @@
 #                            password manager or escrow NOW and delete the file.
 #   Secret pm4ml-vault-approle  role-id / secret-id for management-api
 # Re-running on an initialised store only rotates the AppRole secret-id.
+# INIT_ONLY=1: initialise (and unseal) only, before restoring a snapshot.
 set -euo pipefail
 NS="${NS:?set NS}"
 STORE="${STORE:-vault}"
@@ -55,6 +56,10 @@ if [ "$initialized" != "true" ]; then
     until kx bao status -format=json 2>/dev/null | grep -q '"sealed": *false'; do sleep 2; done
   fi
   echo "Initialised. Keys and root token: $OUT  <- move to escrow and delete"
+  # Restoring a backup (secret-store/backup.sh restore): only an initialised,
+  # unsealed store is needed; the snapshot brings back the configuration and
+  # the AppRole, so do not overwrite Secret <release>-vault-approle.
+  if [ "${INIT_ONLY:-}" = 1 ]; then echo "INIT_ONLY: store initialised, nothing configured"; exit 0; fi
   ROOT=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['root_token'])" "$OUT")
 
   kxt "$ROOT" "

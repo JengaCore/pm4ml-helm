@@ -62,7 +62,7 @@ management-api:
     # Egress IPs the hub should allow. Bare IPv4, comma-separated: the
     # JengaCore MCM rejects CIDR (1.2.3.4/32), even though .env.example shows it.
     WHITELIST_IP: "CHANGE-ME-egress-ip"
-    CACHE_URL: "redis://pm4ml-redis:6379"
+    # CACHE_URL: from Secret pm4ml-runtime, key cache-url (post-renderer)
     CACHE_SYNC_INTERVAL_SECONDS: "30"
     CONTROL_LISTEN_PORT: "4005"
     ENABLE_CORS: "true"
@@ -122,14 +122,16 @@ mojaloop-core-connector:
     CACHE_LIFE_TIME: "30"
     DFSP_ENCRYPT_KYC: "false"
     IS_PREFIX: "false"
-    REDIS_URL: "redis://pm4ml-redis:6379"
+  envFromSecrets:
+    REDIS_URL:                          # same Redis URL as the SDK, from the Secret
+      secret: { name: pm4ml-runtime, key: cache-url }
   livenessProbe:
     enabled: false
   readinessProbe:
     enabled: false
-  resources:                            # size for your own connector
-    requests: { cpu: 100m, memory: 128Mi }
-    limits: { memory: 256Mi }
+  resources:                            # size for your own connector; the simulator
+    requests: { cpu: 100m, memory: 512Mi } # image (Java) was OOM-killed at 256Mi
+    limits: { memory: 1Gi }
 
 # ---------------------------------------------------------------------------
 # SDK scheme adapter (default-config.env + docker-compose.yaml)
@@ -215,3 +217,4 @@ scheme-adapter:
       BACKEND_API_SERVER_MAX_REQUEST_BYTES: "209715200"
       RESOURCE_VERSIONS: "transfers=2.0,quotes=2.0,participants=2.0,parties=2.0,transactionRequests=1.1"
       # CACHE_URL and ILP_SECRET: from Secret pm4ml-runtime (post-renderer).
+      # redis.host above only feeds the chart's wait-for-redis init container.
