@@ -10,7 +10,7 @@
 # For the mode without management-api and Vault, add values-static.yaml.
 #
 # Fill every CHANGE ME. Values marked HUB come from the hub operator.
-# No secret goes in this file. Secrets are Kubernetes Secrets (README, step 3).
+# No secret goes in this file. Secrets are Kubernetes Secrets (README, step 2).
 
 dfspId: &dfspId "CHANGE-ME-dfsp-id"          # HUB: exactly as registered in MCM
 
@@ -152,7 +152,7 @@ scheme-adapter:
       simName: *dfspId
       # management-api pushes the real JWS key and the peer keys over the
       # control channel. The chart still needs a key Secret and one peer key
-      # to start; scripts/init-placeholders.sh creates them (Compose ships the
+      # to start; scripts/create-mcm-secrets.sh creates them (Compose ships the
       # same kind of placeholders in docker/sdk-scheme-adapter/).
       jwsSigningKeySecret:
         name: pm4ml-jws

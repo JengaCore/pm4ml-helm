@@ -25,13 +25,24 @@ fi
 [ -s "$tmp/cs" ] 2>/dev/null && apply "$R"-mcm --from-file=client-secret="$tmp/cs"
 
 # <release>-runtime: the ILP secret (random once, then kept) and the Redis URL
-# (CACHE_URL_FILE, else CACHE_URL, else the in-namespace redis/redis.yaml).
+# (REDIS_HA=1: redis/values-redis-ha.yaml with a generated password; else
+# CACHE_URL_FILE, else CACHE_URL, else the in-namespace redis/redis.yaml).
 # The URL may hold a password or use rediss:// (TLS), so it lives here, not in values.
 write_runtime() {
   ilp="$(kubectl -n "$NS" get secret "$R-runtime" -o jsonpath='{.data.ilp-secret}' 2>/dev/null | base64 -d || true)"
   [ -n "$ilp" ] || ilp="${ILP_SECRET:-$(openssl rand -hex 32)}"
   printf '%s' "$ilp" > "$tmp/ilp"
-  if [ -n "${CACHE_URL_FILE:-}" ]; then cp "$CACHE_URL_FILE" "$tmp/cache-url"
+  if [ "${REDIS_HA:-}" = 1 ]; then
+    # redis/values-redis-ha.yaml: a random password in <release>-redis-auth
+    # (key "auth", read by the chart), kept across re-runs.
+    pw="$(kubectl -n "$NS" get secret "$R-redis-auth" -o jsonpath='{.data.auth}' 2>/dev/null | base64 -d || true)"
+    if [ -z "$pw" ]; then
+      openssl rand -hex 24 | tr -d '\n' > "$tmp/redis-pw"
+      apply "$R-redis-auth" --from-file=auth="$tmp/redis-pw"
+      pw="$(cat "$tmp/redis-pw")"
+    fi
+    printf 'redis://:%s@%s-redis-ha-haproxy:6379' "$pw" "$R" > "$tmp/cache-url"
+  elif [ -n "${CACHE_URL_FILE:-}" ]; then cp "$CACHE_URL_FILE" "$tmp/cache-url"
   elif [ -n "${CACHE_URL:-}" ]; then printf '%s' "$CACHE_URL" > "$tmp/cache-url"
   else
     cur="$(kubectl -n "$NS" get secret "$R-runtime" -o jsonpath='{.data.cache-url}' 2>/dev/null | base64 -d || true)"
