@@ -9,6 +9,7 @@ changed is in [docs/REVIEW-2026-11.md](docs/REVIEW-2026-11.md).
 
 | Doc | |
 |---|---|
+| [docs/BUILDING-BLOCKS.md](docs/BUILDING-BLOCKS.md) | **start here**: the blocks around the core connector, the options for each, the MCM connection, a production-ready cluster |
 | [docs/GENERIC-KUBERNETES.md](docs/GENERIC-KUBERNETES.md) | any Kubernetes, no cloud service: end-to-end install, callback options, day 2 |
 | [docs/PRODUCTION.md](docs/PRODUCTION.md) | keys and backups, load balancer and mTLS, AWS / Azure / on-prem reference |
 | [docs/OPTIONS.md](docs/OPTIONS.md) | every default, its options, and where Helm differs from Compose |
@@ -181,6 +182,9 @@ ISO 20022, GMD, mTLS both ways, JWS signed and validated, test backend `test-bac
 | Redis-HA from `redis/values-redis-ha.yaml` (AUTH from `REDIS_HA=1`, NetworkPolicies on Redis and HAProxy) | 20/20 each way; unauthenticated access refused; another DFSP's pod blocked at HAProxy |
 | Backup with the snapshot-only AppRole (no root token) | snapshot saved; the same AppRole gets `403` on the DFSP's keys |
 | Backup CronJob (`secret-store/backup-cronjob.yaml`) to an S3-compatible bucket | snapshot (712 KB) taken with the backup AppRole and uploaded |
+| Restore Job (`jobs/restore.yaml`): store lost, latest snapshot from S3 | same CA fingerprint; OpenBao needed a store restart to unseal after the restore (documented in the Job) |
+| Bootstrap Job logic (`jobs/bootstrap.yaml`): initialise, CA, AppRoles, runtime secrets | created everything on an empty store; re-run changed nothing; refuses to initialise when it cannot save the keys. Run with the operator's rights: the test cluster does not allow creating the Job's Role |
+| Vault unsealer CronJob (`jobs/vault-unsealer-cronjob.yaml`) | Vault restarted and sealed; unsealed 40 s later |
 | `init.sh` re-run on an initialised store | CA kept, backup AppRole added, secret-ids rotated; without `DFSP_ID` it stops |
 | Metrics on :4004 (`mojaloop_connector_outbound_*` counters and latency histograms, event-loop lag) | ✓ |
 

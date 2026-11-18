@@ -107,19 +107,19 @@ kxt "$ROOT" "
     $BIN write pki/roles/\$r allow_any_name=true allow_subdomains=true allow_localhost=true \
       enforce_hostnames=false require_cn=false max_ttl=97600h >/dev/null
   done
-  $BIN policy write pm4ml-management-api - <<'EOF'
+  $BIN policy write management-api - <<'EOF'
 path \"pki/*\"     { capabilities = [\"create\",\"read\",\"update\",\"delete\",\"list\",\"sudo\"] }
 path \"secrets/*\" { capabilities = [\"create\",\"read\",\"update\",\"delete\",\"list\"] }
 path \"sys/mounts\"   { capabilities = [\"read\"] }
 path \"sys/mounts/*\" { capabilities = [\"create\",\"read\",\"update\"] }
 EOF
-  $BIN write auth/approle/role/pm4ml-management-api policies=pm4ml-management-api \
+  $BIN write auth/approle/role/management-api policies=management-api \
     secret_id_ttl=0 token_ttl=1h token_max_ttl=24h >/dev/null
   # backup.sh: online Raft snapshots and nothing else (it cannot restore).
-  $BIN policy write pm4ml-store-backup - <<'EOF'
+  $BIN policy write store-backup - <<'EOF'
 path \"sys/storage/raft/snapshot\" { capabilities = [\"read\"] }
 EOF
-  $BIN write auth/approle/role/pm4ml-store-backup policies=pm4ml-store-backup \
+  $BIN write auth/approle/role/store-backup policies=store-backup \
     secret_id_ttl=0 token_ttl=15m token_max_ttl=1h >/dev/null
 "
 
@@ -131,7 +131,7 @@ approle_secret() { # role, secret name
     --from-file=role-id="$tmp/role-id" --from-file=secret-id="$tmp/secret-id" \
     --dry-run=client -o yaml | kubectl -n "$NS" apply -f - >/dev/null
 }
-approle_secret pm4ml-management-api "$R-vault-approle"
-approle_secret pm4ml-store-backup "$R-store-backup"
+approle_secret management-api "$R-vault-approle"
+approle_secret store-backup "$R-store-backup"
 echo "Secrets $R-vault-approle and $R-store-backup written. Restart management-api if it is running:"
 echo "  kubectl -n $NS rollout restart deploy/$R-management-api"
