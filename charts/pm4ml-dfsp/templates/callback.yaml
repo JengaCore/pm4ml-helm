@@ -6,8 +6,13 @@ kind: Service
 metadata:
   name: {{ include "dfsp.fullname" $ }}-callbacks
   labels: {{- include "dfsp.labels" $ | nindent 4 }}
-  {{- with .annotations }}
-  annotations: {{- toYaml . | nindent 4 }}
+  {{- if or .annotations .keep }}
+  annotations:
+    {{- if .keep }}
+    # Kept on helm uninstall: the address the switch knows survives a reinstall.
+    helm.sh/resource-policy: keep
+    {{- end }}
+    {{- with .annotations }}{{ toYaml . | nindent 4 }}{{ end }}
   {{- end }}
 spec:
   type: {{ .type }}

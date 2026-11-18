@@ -8,6 +8,10 @@
    {{- end }}
 2. The callback host {{ .Values.callback.host }} must point at:
      kubectl -n {{ .Release.Namespace }} get svc {{ include "dfsp.fullname" . }}-callbacks
+   {{- if .Values.callback.preflight.enabled }}
+   management-api enrols once it resolves{{ with .Values.callback.preflight.expectIP }} to {{ . }}{{ end }}:
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "dfsp.mgmtName" . }} -c wait-callback-dns
+   {{- end }}
 3. Enrolment with MCM (needs Secret {{ include "dfsp.mcmSecret" . }}):
      kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "dfsp.mgmtName" . }} | grep -oE '"eventType":"[A-Z_]+"' | sort | uniq -c
    Then the hub operator signs the request in MCM.

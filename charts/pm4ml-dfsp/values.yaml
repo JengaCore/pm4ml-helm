@@ -37,7 +37,15 @@ switch:
 
 callback:
   # -- Public host name the switch calls back (in the server certificate and in MCM).
+  # Only the name is needed at install: the address can come after (see preflight).
   host: ""
+  preflight:
+    # -- management-api waits (init container) until callback.host resolves before enrolling,
+    # so a DFSP can install first, read the load balancer's address, then create the DNS record.
+    enabled: true
+    # -- Also require this address among the answers (the reserved IP). Empty: any address.
+    expectIP: ""
+    image: busybox:1.36.1
   service:
     # -- Publish the SDK's inbound port as a TCP 443 service (TLS passthrough: the SDK terminates mTLS).
     enabled: true
@@ -50,10 +58,14 @@ callback:
     loadBalancerSourceRanges: []
     # -- Keep the switch's source IP.
     externalTrafficPolicy: Local
+    # -- A reserved address (OpenStack floating IP, GKE static IP, Azure static IP). Some
+    # providers want an annotation instead: see the chart README, "Callback address".
     loadBalancerIP: ""
     # -- e.g. AWS NLB: service.beta.kubernetes.io/aws-load-balancer-type: external,
     # aws-load-balancer-nlb-target-type: ip, aws-load-balancer-eip-allocations: eipalloc-...
     annotations: {}
+    # -- Keep the Service (and so its address) on helm uninstall (helm.sh/resource-policy: keep).
+    keep: true
   istio:
     # -- Istio Gateway (PASSTHROUGH) + VirtualService instead of, or as well as, the Service.
     enabled: false

@@ -26,8 +26,9 @@ nothing else in the chart changes.
 
 ## Install
 
-1. Reserve the callback IP (static IP, EIP) and point `callback.host` at it:
-   the host goes into the server certificate and into MCM at enrolment.
+1. Choose the callback host name (`callback.host`): it goes into the server
+   certificate and into MCM at enrolment. The address can come later (see
+   [Callback address](#callback-address)).
 2. Create the Secret with the client secret the hub operator sent:
    ```sh
    kubectl -n dfsp create secret generic mydfsp-mcm --from-literal=client-secret='<from the hub>'
@@ -42,10 +43,46 @@ nothing else in the chart changes.
    ```
 4. Move Secret `mydfsp-store-init` (unseal/recovery keys, root token) to escrow
    and delete it; with OpenBao, also back up `mydfsp-openbao-seal`.
-5. The hub operator signs the DFSP's request in MCM. management-api installs the
+5. Point `callback.host` at the callback Service's address
+   (`kubectl get svc mydfsp-callbacks`) if not done before: management-api
+   waits for that DNS record, then enrols.
+6. The hub operator signs the DFSP's request in MCM. management-api installs the
    certificates; payments flow.
 
 The NOTES printed by `helm install` repeat these steps with your names.
+
+## Callback address
+
+The switch calls the DFSP at `https://<callback.host>:443`, with mutual TLS
+terminated by the SDK. The chart keeps that address stable and refuses to
+enrol on a name that does not resolve:
+
+- **Name before address.** management-api has an init container
+  (`callback.preflight`) that waits until `callback.host` resolves, and, with
+  `callback.preflight.expectIP`, until it resolves to that address. So either
+  reserve the address first, or install, read the address from
+  `kubectl get svc <release>-callbacks`, then create the DNS record:
+  enrolment starts by itself. Its log says what it waits for:
+  `kubectl logs deploy/<release>-management-api -c wait-callback-dns`.
+- **The address survives.** The Service has `helm.sh/resource-policy: keep`
+  (`callback.service.keep`): `helm uninstall` and a reinstall keep the same
+  load balancer and address. Delete the Service by hand to release it.
+- **A reserved address**, so a lost cluster or Service comes back on the same
+  IP and nothing changes on the switch side:
+
+| Platform | Reserve | Values |
+|---|---|---|
+| AWS (NLB, AWS Load Balancer Controller) | one Elastic IP per subnet | `annotations`: `service.beta.kubernetes.io/aws-load-balancer-type: external`, `...-nlb-target-type: ip`, `...-scheme: internet-facing`, `...-eip-allocations: eipalloc-a,eipalloc-b` |
+| Azure (AKS) | a static Standard public IP, in the node resource group or another one | `annotations`: `service.beta.kubernetes.io/azure-pip-name: <name>` (+ `azure-load-balancer-resource-group: <rg>` if elsewhere) |
+| Google (GKE) | a regional static external IP | `loadBalancerIP: <ip>` |
+| OpenStack (Octavia) | a floating IP in the project | `loadBalancerIP: <floating ip>` (the Service then shows it; validated) |
+| MetalLB | an address in an `IPAddressPool` | `annotations`: `metallb.universe.tf/loadBalancerIPs: <ip>` |
+| F5 / HAProxy / bare metal | the appliance's VIP, TCP mode, forwarding to a NodePort | `type: NodePort`, `nodePort: 3xxxx` |
+
+Always set `loadBalancerSourceRanges` to the switch's egress addresses (ask
+the hub operator) and keep `externalTrafficPolicy: Local`. Check from outside:
+`openssl s_client -connect <callback.host>:443 -servername <callback.host>`
+must show `<dfspId> CA` as issuer once enrolled.
 
 ## Bring your own core connector
 
@@ -87,7 +124,9 @@ de-duplicate. See [docs/BUILDING-BLOCKS.md](../../docs/BUILDING-BLOCKS.md).
 ## Validation
 
 2026-11-19, sbx UAT (iso20022, GMD), release `dfsp3` = DFSP `pm4mlhelm03`, no
-change on the switch. The core connector was swapped by values only
+change on the switch. Callback on an OpenStack Octavia load balancer; the
+DNS preflight checked against the expected address (and kept waiting on a
+wrong one); the Service kept its address through upgrades. The core connector was swapped by values only
 (`mojaloop/mojaloop-simulator:v15.5.4`, port 3000, rules file from a ConfigMap).
 Enrolment through MCM to `DFSP_CLIENT_CERT_CONFIGURED`; payments 20/20 in each
 of: pm4mlhelm03 → another PM4ML DFSP, the reverse, and a third DFSP →
@@ -113,13 +152,17 @@ Every key is documented in [values.yaml](values.yaml). The main ones:
 | `switch.ilpVersion` | `"4"` | ILP version (4 with iso20022; Compose uses 4). |
 | `switch.currency` | `""` | Settlement currency of this DFSP on the switch. |
 | `switch.caBundle` | `""` | Private CA (PEM) of the switch's mcm./keycloak. hosts, if they do not use a public CA. |
-| `callback.host` | `""` | Public host name the switch calls back (in the server certificate and in MCM). |
+| `callback.host` | `""` | Public host name the switch calls back (in the server certificate and in MCM). Only the name is needed at install: the address can come after (see preflight). |
+| `callback.preflight.enabled` | `true` | management-api waits (init container) until callback.host resolves before enrolling, so a DFSP can install first, read the load balancer's address, then create the DNS record. |
+| `callback.preflight.expectIP` | `""` | Also require this address among the answers (the reserved IP). Empty: any address. |
 | `callback.service.enabled` | `true` | Publish the SDK's inbound port as a TCP 443 service (TLS passthrough: the SDK terminates mTLS). |
 | `callback.service.type` | `LoadBalancer` | LoadBalancer (cloud, MetalLB, Octavia) or NodePort (behind an F5/HAProxy in TCP mode). |
 | `callback.service.nodePort` | `null` | Fixed node port when type is NodePort. |
 | `callback.service.loadBalancerSourceRanges` | `[]` | Restrict to the switch's egress IPs (CIDRs). Strongly recommended. |
 | `callback.service.externalTrafficPolicy` | `Local` | Keep the switch's source IP. |
+| `callback.service.loadBalancerIP` | `""` | A reserved address (OpenStack floating IP, GKE static IP, Azure static IP). Some providers want an annotation instead: see the chart README, "Callback address". |
 | `callback.service.annotations` | `{}` | e.g. AWS NLB: service.beta.kubernetes.io/aws-load-balancer-type: external, aws-load-balancer-nlb-target-type: ip, aws-load-balancer-eip-allocations: eipalloc-... |
+| `callback.service.keep` | `true` | Keep the Service (and so its address) on helm uninstall (helm.sh/resource-policy: keep). |
 | `callback.istio.enabled` | `false` | Istio Gateway (PASSTHROUGH) + VirtualService instead of, or as well as, the Service. |
 | `callback.ingressNginx.enabled` | `false` | ingress-nginx Ingress with ssl-passthrough (the controller needs --enable-ssl-passthrough). |
 | `egress.whitelistIps` | `[]` | The DFSP's fixed egress IPs (bare IPv4, no CIDR): MCM gives them to the switch. |

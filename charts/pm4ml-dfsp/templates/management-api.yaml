@@ -47,6 +47,28 @@ spec:
           configMap: { name: {{ $m }}-csr }
         - name: tmp
           emptyDir: {}
+      {{- if .Values.callback.preflight.enabled }}
+      initContainers:
+        # Enrol only once the callback host resolves (to callback.preflight.expectIP if set):
+        # MCM gives the switch this host, and the server certificate carries it.
+        - name: wait-callback-dns
+          image: {{ .Values.callback.preflight.image }}
+          command:
+            - sh
+            - -c
+            - |
+              H={{ .Values.callback.host | quote }}; WANT={{ .Values.callback.preflight.expectIP | quote }}
+              while :; do
+                ips=$(nslookup "$H" 2>/dev/null | awk '/^Address/ && NR>2 {print $NF}' | tr '\n' ' ')
+                if [ -n "$ips" ] && { [ -z "$WANT" ] || echo " $ips" | grep -q " $WANT "; }; then
+                  echo "callback host $H resolves to $ips"; exit 0
+                fi
+                echo "waiting for DNS: $H -> ${WANT:-any address} (now: ${ips:-nothing}). Point it at the callback load balancer."
+                sleep 20
+              done
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 32Mi } }
+      {{- end }}
       containers:
         - name: management-api
           image: "{{ .Values.managementApi.image.repository }}:{{ .Values.managementApi.image.tag }}"
