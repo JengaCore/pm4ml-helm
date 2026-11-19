@@ -91,7 +91,9 @@ watches it: the `certCheck` CronJob (on by default, every 6 hours) reads, with t
 DFSP's own MCM credentials, what MCM holds for this DFSP. It fails, and posts to
 `certCheck.alertWebhook` (any Slack-compatible incoming webhook), when a renewal waits
 for the hub's signature (`renewal.pending`) or the certificate expires within
-`certCheck.warnDays` (14). With the Prometheus Operator, `certCheck.prometheusRule`
+`certCheck.warnDays` (14). If the check itself cannot run (MCM or Keycloak
+unreachable, the client secret rejected) the Job fails too and the webhook says so. With
+the Prometheus Operator, `certCheck.prometheusRule`
 adds `Pm4mlCertificateAttention`; without it, the failed Job is the signal
 (`KubeJobFailed`). Validated against sbx UAT's MCM. The hub runs the same check on its
 side (switch-iac `dfsp-cert-check`, `DfspCertificateAttention`). Agree with the hub how

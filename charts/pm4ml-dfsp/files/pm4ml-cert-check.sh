@@ -11,16 +11,21 @@
 #   cert.expiring    the signed certificate expires within WARN_DAYS
 #   cert.expired     it has expired: no outgoing payments until a renewal is signed
 #   cert.ok          nothing to do
+#   check.failed     the check itself could not run (token, MCM, its answer)
 #
-# It exits 1 when something needs attention and, if ALERT_WEBHOOK_URL is set,
+# Exit status: 0 ok, 1 attention, 2 check failed. If ALERT_WEBHOOK_URL is set it
 # posts a Slack-compatible message ({"text": ...}): Slack, Mattermost, Rocket.Chat,
 # Teams workflows. With CHECK_INTERVAL_SECONDS it runs forever (Docker Compose),
-# keeping the result in $STATUS_FILE for the container's healthcheck.
+# keeping ok / attention / failed in $STATUS_FILE for the container's healthcheck,
+# re-reading SECRETS_ENV_FILE before each run (so a rotated client secret or a new
+# webhook URL is picked up), and posting a check failure only on the first failed
+# run after a good one.
 #
 # Environment: DFSP_ID, CLIENT_ID (default DFSP_ID), CLIENT_SECRET,
-# CLIENT_SECRET_FILE or AUTH_CLIENT_SECRET, TOKEN_URL, MCM_URL (…/pm4mlapi), WARN_DAYS (14),
-# CA_FILE (private CA of the switch's hosts), ALERT_WEBHOOK_URL or
-# ALERT_WEBHOOK_URL_FILE, CHECK_INTERVAL_SECONDS, STATUS_FILE (/tmp/cert-status).
+# CLIENT_SECRET_FILE or AUTH_CLIENT_SECRET, TOKEN_URL, MCM_URL (…/pm4mlapi),
+# WARN_DAYS (14), CA_FILE (private CA of the switch's hosts), ALERT_WEBHOOK_URL or
+# ALERT_WEBHOOK_URL_FILE, SECRETS_ENV_FILE, CHECK_INTERVAL_SECONDS,
+# STATUS_FILE (/tmp/cert-status).
 set -eu
 
 DFSP="${DFSP_ID:?DFSP_ID is required}"
@@ -29,10 +34,6 @@ TOKEN_URL="${TOKEN_URL:?TOKEN_URL is required}"
 MCM="${MCM_URL:?MCM_URL is required}"
 WARN_DAYS="${WARN_DAYS:-14}"
 STATUS_FILE="${STATUS_FILE:-/tmp/cert-status}"
-[ -z "${CLIENT_SECRET_FILE:-}" ] || CLIENT_SECRET="$(cat "$CLIENT_SECRET_FILE")"
-# Docker Compose: wait-for-secrets.sh exports the secret as AUTH_CLIENT_SECRET.
-CLIENT_SECRET="${CLIENT_SECRET:-${AUTH_CLIENT_SECRET:-}}"
-[ -z "${ALERT_WEBHOOK_URL_FILE:-}" ] || ALERT_WEBHOOK_URL="$(cat "$ALERT_WEBHOOK_URL_FILE" 2>/dev/null || true)"
 
 emit() { # event, msg
   printf '{"ts":"%s","component":"pm4ml-cert-check","event":"%s","dfsp":"%s","msg":"%s"}\n' \
@@ -41,30 +42,50 @@ emit() { # event, msg
 }
 c() { curl -sS --max-time 30 ${CA_FILE:+--cacert "$CA_FILE"} "$@"; }
 
+load_secrets() { # the client secret and the webhook URL, read again on every run
+  if [ -n "${SECRETS_ENV_FILE:-}" ] && [ -r "$SECRETS_ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090  # rendered by Vault Agent at run time
+    . "$SECRETS_ENV_FILE"
+    set +a
+  fi
+  secret="${CLIENT_SECRET:-${AUTH_CLIENT_SECRET:-}}"
+  [ -z "${CLIENT_SECRET_FILE:-}" ] || secret="$(cat "$CLIENT_SECRET_FILE")"
+  hook="${ALERT_WEBHOOK_URL:-}"
+  [ -z "${ALERT_WEBHOOK_URL_FILE:-}" ] || hook="$(cat "$ALERT_WEBHOOK_URL_FILE" 2>/dev/null || true)"
+}
+
 notify() { # text
-  [ -n "${ALERT_WEBHOOK_URL:-}" ] || return 0
+  [ -n "${hook:-}" ] || return 0
   # Not c(): CA_FILE is the switch's private CA and would replace the public trust
   # store that Slack, Teams and similar webhooks need.
   curl -sS --max-time 30 -o /dev/null -X POST -H 'Content-Type: application/json' \
-    --data "$(jq -cn --arg t "$1" '{text: $t}')" "$ALERT_WEBHOOK_URL" \
+    --data "$(jq -cn --arg t "$1" '{text: $t}')" "$hook" \
     || emit "notify.failed" "could not post to the alert webhook"
 }
 
-check() { # -> 0 ok, 1 attention or failure
+failed() { # msg -> status 2
+  emit "check.failed" "$1"
+  failure_msg="$1"
+  return 2
+}
+
+check() { # -> 0 ok, 1 attention, 2 the check failed
+  load_secrets
+  [ -n "$secret" ] || { failed "no client secret (CLIENT_SECRET, CLIENT_SECRET_FILE or AUTH_CLIENT_SECRET)"; return 2; }
   tok="$(c -X POST "$TOKEN_URL" -d grant_type=client_credentials --data-urlencode "client_id=$CID" \
-           --data-urlencode "client_secret=${CLIENT_SECRET:?CLIENT_SECRET or CLIENT_SECRET_FILE is required}" \
-         | jq -r '.access_token // empty' 2>/dev/null || true)"
-  if [ -z "$tok" ]; then emit "check.failed" "no token from $TOKEN_URL (client secret rotated?)"; return 1; fi
+           --data-urlencode "client_secret=$secret" | jq -r '.access_token // empty' 2>/dev/null || true)"
+  [ -n "$tok" ] || { failed "no token from $TOKEN_URL (client secret rotated? Keycloak unreachable?)"; return 2; }
   out="$(c -w '\n%{http_code}' -H "Authorization: Bearer $tok" \
            "$MCM/dfsps/$(jq -rn --arg x "$DFSP" '$x|@uri')/enrollments/inbound" || printf '\n000')"
   code="$(printf '%s' "$out" | tail -n1)"
-  if [ "$code" != 200 ]; then emit "check.failed" "MCM answered HTTP $code"; return 1; fi
+  [ "$code" = 200 ] || { failed "MCM answered HTTP $code"; return 2; }
   body="$(printf '%s' "$out" | sed '$d')"
   # A parse error must not read as "nothing signed yet": that would silence the alert.
   if ! expiry="$(printf '%s' "$body" | jq -er '[.[]? | select(.state=="CERT_SIGNED") | .certInfo.notAfter // empty
              | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdate] | max // ""' 2>&1)" \
      || ! pending="$(printf '%s' "$body" | jq -er '[.[]? | select(.state=="CSR_LOADED") | .id] | join(" ")' 2>&1)"; then
-    emit "check.failed" "cannot read MCM's answer: ${expiry:-} ${pending:-}"; return 1
+    failed "cannot read MCM's answer: ${expiry:-} ${pending:-}"; return 2
   fi
   now="$(date -u +%s)"
   if [ -z "$expiry" ]; then
@@ -93,8 +114,22 @@ check() { # -> 0 ok, 1 attention or failure
   return $rc
 }
 
-if [ -z "${CHECK_INTERVAL_SECONDS:-}" ]; then check; exit $?; fi
+failure_note() {
+  notify "[$DFSP] The payment manager's certificate check cannot run: ${failure_msg:-unknown}. Until it runs again, a renewal waiting for the hub's signature goes unnoticed."
+}
+
+if [ -z "${CHECK_INTERVAL_SECONDS:-}" ]; then # one run (Kubernetes CronJob)
+  rc=0; check || rc=$?
+  [ "$rc" -ne 2 ] || failure_note
+  exit "$rc"
+fi
 while :; do
-  if check; then echo ok > "$STATUS_FILE"; else echo attention > "$STATUS_FILE"; fi
+  rc=0; check || rc=$?
+  last="$(cat "$STATUS_FILE" 2>/dev/null || true)"
+  case "$rc" in
+    0) echo ok > "$STATUS_FILE" ;;
+    1) echo attention > "$STATUS_FILE" ;;
+    *) [ "$last" = failed ] || failure_note; echo failed > "$STATUS_FILE" ;;
+  esac
   sleep "$CHECK_INTERVAL_SECONDS"
 done
