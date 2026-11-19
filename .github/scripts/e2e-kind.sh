@@ -108,7 +108,9 @@ k wait --for=condition=complete "job/$R-bootstrap-2" --timeout=600s || fail "boo
 
 step "store pod restart"
 k delete pod "$R-vault-0" --wait=true
-k wait --for=condition=ready pod/"$R-vault-0" --timeout=600s || true
+# Running, not Ready: a sealed Vault is never Ready.
+k wait --for=jsonpath='{.status.containerStatuses[0].started}'=true pod/"$R-vault-0" --timeout=600s
+until store sys/seal-status >/dev/null 2>&1; do sleep 2; done
 if [ "$KIND" = openbao ]; then
   for _ in $(seq 1 30); do [ "$(store sys/seal-status | jq -r .sealed)" = false ] && break; sleep 2; done
   [ "$(store sys/seal-status | jq -r .sealed)" = false ] || fail "OpenBao did not unseal itself"
