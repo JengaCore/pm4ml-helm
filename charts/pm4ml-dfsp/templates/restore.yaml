@@ -102,7 +102,14 @@ spec:
               fi
               until [ "$(curl -s "$A/v1/sys/seal-status" | jq -r .sealed)" = "false" ]; do sleep 2; done
               tok=$(jq -r .root_token /work/throwaway.json)
-              curl -sf -X POST -H "X-Vault-Token: $tok" --data-binary @/work/store.snap "$A/v1/sys/storage/raft/snapshot-force"
+              if ! curl -sS --fail-with-body -X POST -H "X-Vault-Token: $tok" --data-binary @/work/store.snap \
+                     "$A/v1/sys/storage/raft/snapshot-force" > /work/restore.out 2>&1; then
+                cat /work/restore.out; rm -f /work/throwaway.json /work/store.snap
+                say "snapshot NOT restored (corrupt object, or taken with another seal key?)."
+                say "The store is now initialised with throwaway keys that are gone: wipe its volume"
+                say "(scale the StatefulSet to 0, delete PVC data-$STORE_POD, scale to 1) before trying again."
+                exit 1
+              fi
               rm -f /work/throwaway.json /work/store.snap
               say "restored from $key"
               if [ "$KIND" = vault ]; then
@@ -120,7 +127,9 @@ spec:
                 say "OpenBao: restart the store pod ($STORE_POD) so it unseals, then management-api."
               fi
               # Compare with the CA before the loss (no openssl in this image: SHA-256 of the PEM).
-              say "DFSP CA PEM sha256: $(curl -s "$A/v1/pki/cert/ca" | jq -r .data.certificate | sha256sum | cut -c1-64)"
+              cert=$(curl -s "$A/v1/pki/cert/ca" | jq -r '.data.certificate // empty' 2>/dev/null || true)
+              if [ -n "$cert" ]; then say "DFSP CA PEM sha256: $(printf '%s\n' "$cert" | sha256sum | cut -c1-64)"
+              else say "the store is sealed: check the DFSP CA after unsealing it"; fi
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
           volumeMounts:
