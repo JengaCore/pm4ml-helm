@@ -10,6 +10,14 @@ version: 0.1.0
 appVersion: "v24.19.3"
 keywords: [mojaloop, pm4ml, dfsp, payments]
 home: https://github.com/JengaCore/pm4ml-helm
+sources:
+  - https://github.com/JengaCore/pm4ml-helm
+  - https://github.com/mojaloop/sdk-scheme-adapter
+  - https://github.com/pm4ml/mojaloop-payment-manager-management-api
+kubeVersion: ">=1.27.0-0"
+maintainers:
+  - name: jengacore
+    url: https://jengacore.com
 dependencies:
   - name: redis-ha
     version: 4.35.5

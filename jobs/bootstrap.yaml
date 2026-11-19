@@ -5,7 +5,8 @@
 #   kubectl -n <ns> create configmap pm4ml-bootstrap-config \
 #     --from-literal=DFSP_ID=<dfsp id> --from-literal=STORE=openbao   # or vault
 #     # optional: --from-literal=REDIS_HA=1   (redis/values-redis-ha.yaml)
-#     #           --from-literal=CACHE_URL_SECRET=<secret>/<key>  (managed Redis URL)
+#     #           --from-literal=CACHE_URL_SECRET=<secret>/<key>  (managed Redis URL; add
+#             <secret> to the Role's resourceNames below)
 #   kubectl -n <ns> apply -f jobs/bootstrap.yaml       (or ./scripts/for-release.sh <release> ...)
 #   kubectl -n <ns> wait --for=condition=complete job/pm4ml-bootstrap --timeout=5m
 #
@@ -92,7 +93,9 @@ data:
     if [ "$(api GET sys/init | jq -r .initialized)" != "true" ]; then
       # The init output exists once. Prove it can be saved before creating it.
       echo x > "$T/probe"
-      k create secret generic "$R-store-init" --from-file=probe="$T/probe" --dry-run=server -o name >/dev/null \
+      # Same path as sput (apply GETs, then creates or patches), checked by the API server.
+      k create secret generic "$R-store-init" --from-file=probe="$T/probe" --dry-run=client -o yaml \
+        | k apply --dry-run=server -f - >/dev/null \
         || { say "cannot write Secret $R-store-init: fix RBAC before initialising (nothing done)"; exit 1; }
       if [ "$KIND" = openbao ]; then body='{"recovery_shares":5,"recovery_threshold":3}'
       else body='{"secret_shares":5,"secret_threshold":3}'; fi
@@ -157,7 +160,9 @@ data:
       if [ -z "$pw" ]; then rnd 48 > "$T/pw"; sput "$R-redis-auth" "auth=$T/pw"; pw="$(cat "$T/pw")"; say "wrote Secret $R-redis-auth"; fi
       printf 'redis://:%s@%s-redis-ha-haproxy:6379' "$pw" "$R" > "$T/url"
     elif [ -n "${CACHE_URL_SECRET:-}" ]; then
+      # The Role must allow get on this Secret: add its name to resourceNames above.
       sget "${CACHE_URL_SECRET%%/*}" "${CACHE_URL_SECRET#*/}" > "$T/url"
+      [ -s "$T/url" ] || { say "cannot read $CACHE_URL_SECRET (missing, or not in the Role's resourceNames): cache-url left unchanged"; exit 1; }
     else
       cur="$(sget "$R-runtime" cache-url)"; printf '%s' "${cur:-redis://$R-redis:6379}" > "$T/url"
     fi
@@ -198,7 +203,9 @@ spec:
           env:
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
-            - { name: RELEASE, value: pm4ml }
+            # From the pod label, so it follows ./scripts/for-release.sh like every name here.
+            - name: RELEASE
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['app.kubernetes.io/instance']" } }
             - { name: STORE_ADDR, value: "http://pm4ml-vault:8200" }
             - { name: HOME, value: /tmp }
           securityContext:

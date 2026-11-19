@@ -146,7 +146,7 @@ scheme-adapter:
     # through Redis, so any replica can take any callback. Compose runs 1.
     replicaCount: 2
     redis:
-      host: pm4ml-redis
+      host: pm4ml-redis             # with redis/values-redis-ha.yaml: <release>-redis-ha-haproxy
       port: 6379
     config:
       simName: *dfspId

@@ -86,7 +86,8 @@ come up uninitialised, and initialising it would mean onboarding again.
    management-api.
 3. Run the offline migration in a one-off pod that mounts the volume, with a
    `migrate.hcl` naming `storage_source "file" { path = ".../file" }` and
-   `storage_destination "raft" { path = ".../file/raft-data" node_id = "pm4ml-vault-0" }`,
+   `storage_destination "raft" { path = ".../file/raft-data" node_id = "pm4ml-vault-0" }` and
+   `cluster_addr = "http://127.0.0.1:8201"` (required when the destination is Raft),
    then `vault operator migrate -config=migrate.hcl` (`bao operator migrate` for OpenBao).
 4. Point the Raft `path` in the store's ConfigMap at `.../file/raft-data`, start the store, unseal it with
    the existing keys, and check the CA fingerprint is unchanged.
@@ -173,6 +174,18 @@ sequenceDiagram
     PM-->>CC: real state
     Note over CC: retry only if ABORTED.<br/>A second POST with H would be a second payment.
 ```
+
+Where the core connector gets `T`: keep quote acceptance manual
+(`AUTO_ACCEPT_QUOTES=false`, the default here and in Compose). The SDK then
+answers the first `POST /transfers` with the quote **and the `transferId`**, and
+no money moves until the core connector sends `PUT /transfers/{T}` with
+`acceptQuote: true`. So the core connector records `T` against `H` before the
+only call that can move money, and after a lost answer to that call it always
+has `T` to ask about. If the first `POST` itself gets no answer, nothing has
+moved yet: the transfer is never prepared without the `PUT`, and the core
+connector may start again (the SDK's error body carries `transferState.transferId`
+when one was created). With automatic acceptance there is no such point: avoid
+it, or reconcile by `H` against the switch's records before any retry.
 
 ## Onboarding sequence
 

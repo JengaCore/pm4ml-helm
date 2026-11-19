@@ -18,6 +18,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $m }}
+  annotations:
+    ignore-check.kube-linter.io/env-var-secret: "VAULT_ROLE_SECRET_ID_FILE holds a file path, not a secret"
   labels: {{- include "dfsp.labels" . | nindent 4 }}
     app.kubernetes.io/name: management-api
 spec:
@@ -46,6 +48,8 @@ spec:
         - name: csr
           configMap: { name: {{ $m }}-csr }
         - name: tmp
+          emptyDir: {}
+        - name: scratch
           emptyDir: {}
       {{- if .Values.callback.preflight.enabled }}
       initContainers:
@@ -79,12 +83,13 @@ spec:
           startupProbe: { httpGet: { path: /health, port: http }, periodSeconds: 5, failureThreshold: 30 }
           readinessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 10 }
           livenessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 20 }
-          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           resources: {{- toYaml .Values.managementApi.resources | nindent 12 }}
           volumeMounts:
             - { name: approle, mountPath: /vault/auth-data, readOnly: true }
             - { name: csr, mountPath: /resources, readOnly: true }
             - { name: tmp, mountPath: /secrets }
+            - { name: scratch, mountPath: /tmp }
           env:
             - { name: DFSP_ID, value: {{ .Values.dfspId | quote }} }
             - { name: AUTH_ENABLED, value: "true" }

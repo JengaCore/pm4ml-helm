@@ -74,15 +74,18 @@ spec:
           readinessProbe:
             httpGet: { path: /v1/sys/health, port: 8200 }
             periodSeconds: 10
-          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           resources: {{- toYaml .Values.store.resources | nindent 12 }}
           volumeMounts:
             - { name: config, mountPath: {{ $root }}/config }
+            - { name: tmp, mountPath: /tmp }
             - { name: data, mountPath: {{ $root }}/file }
             {{- if $bao }}
             - { name: seal, mountPath: /openbao/seal, readOnly: true }
             {{- end }}
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: config
           configMap: { name: {{ $n }}-config }
         {{- if $bao }}

@@ -1,0 +1,120 @@
+name: Chart Release
+
+# Publishes charts/pm4ml-dfsp when a merge to main carries a chart version that has not
+# been released yet (the version in Chart.yaml is the release; CI requires a bump on
+# every chart change). Steps: the full Chart CI (static + kind), then
+#   - helm package, push to GHCR as an OCI artifact:
+#       helm install <release> oci://ghcr.io/jengacore/charts/pm4ml-dfsp --version <x.y.z>
+#   - cosign keyless signature of that artifact (GitHub OIDC, no key to manage):
+#       cosign verify ghcr.io/jengacore/charts/pm4ml-dfsp:<x.y.z> \
+#         --certificate-identity-regexp 'https://github.com/JengaCore/pm4ml-helm/.github/workflows/chart-release.yml@.*' \
+#         --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#   - git tag pm4ml-dfsp-<x.y.z> and a GitHub release with the .tgz and its SHA-256.
+on:
+  push:
+    branches: [main]
+    paths: ["charts/pm4ml-dfsp/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two releases at once, never cancelled half-way (a tag may already exist).
+concurrency:
+  group: chart-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Version to release
+    runs-on: jengacore-k8s
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: v
+        run: |
+          v=$(sed -n 's/^version: *//p' charts/pm4ml-dfsp/Chart.yaml)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/pm4ml-dfsp-$v" >/dev/null; then
+            echo "pm4ml-dfsp-$v is already released: nothing to do"; echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify:
+    name: Chart CI
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    uses: ./.github/workflows/chart-ci.yml
+
+  publish:
+    name: Package, push, sign, tag
+    needs: [version, verify]
+    runs-on: jengacore-k8s
+    timeout-minutes: 15
+    permissions:
+      contents: write   # tag + GitHub release
+      packages: write   # GHCR
+      id-token: write   # cosign keyless (OIDC)
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Tools (pinned versions, checked SHA-256)
+        run: |
+          .github/scripts/install-tools.sh "$HOME/.local/bin" helm
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Package
+        run: |
+          echo "REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts" >> "$GITHUB_ENV"
+          helm dependency build charts/pm4ml-dfsp
+          helm package charts/pm4ml-dfsp --destination dist
+          (cd dist && sha256sum "pm4ml-dfsp-$VERSION.tgz" > "pm4ml-dfsp-$VERSION.tgz.sha256")
+          cat "dist/pm4ml-dfsp-$VERSION.tgz.sha256"
+
+      - name: Push to GHCR and sign
+        # Secrets through env, not ${{ }} inside the script.
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | helm registry login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          printf '%s' "$REGISTRY_TOKEN" | cosign login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          helm push "dist/pm4ml-dfsp-$VERSION.tgz" "oci://$REGISTRY" 2>&1 | tee push.log
+          digest=$(sed -n 's/^Digest: *//p' push.log)
+          [ -n "$digest" ] || { echo "no digest from helm push" >&2; exit 1; }
+          cosign sign --yes "$REGISTRY/pm4ml-dfsp@$digest"
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+
+      - name: Tag and GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "pm4ml-dfsp-$VERSION" --target "$GITHUB_SHA" \
+            --title "pm4ml-dfsp $VERSION" \
+            --notes "helm install <release> oci://$REGISTRY/pm4ml-dfsp --version $VERSION
+
+          OCI digest: \`$DIGEST\` (signed with cosign, keyless; see chart-release.yml for the verify command).
+          App: sdk-scheme-adapter $(sed -n 's/^appVersion: *//p' charts/pm4ml-dfsp/Chart.yaml)." \
+            "dist/pm4ml-dfsp-$VERSION.tgz" "dist/pm4ml-dfsp-$VERSION.tgz.sha256"
+          {
+            echo "### pm4ml-dfsp $VERSION published"
+            echo '```bash'
+            echo "helm install <release> oci://$REGISTRY/pm4ml-dfsp --version $VERSION"
+            echo '```'
+            echo "Digest: \`$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"

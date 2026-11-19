@@ -173,9 +173,22 @@ coreConnector:
     limits: { memory: 1Gi }
   readinessProbe: {}
   livenessProbe: {}
-  # -- Pod and container security context for the core connector (depends on its image).
-  podSecurityContext: {}
-  securityContext: {}
+  # -- Pod security context. uid 1001 is the user of the Mojaloop/PM4ML images; set your
+  # image's uid (Kubernetes cannot check a non-numeric USER such as app-user).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    seccompProfile: { type: RuntimeDefault }
+  # -- Container security context. The root file system is read-only; /tmp is writable
+  # (an emptyDir). Mount other writable paths with extraVolumes, or relax this.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: [ALL] }
+  # -- Default: spread replicas over nodes (preferred).
+  affinity: {}
   pdb:
     enabled: true
     minAvailable: 1
@@ -195,6 +208,9 @@ store:
     enabled: true
     size: 1Gi
     storageClass: ""
+    # -- Required to run with persistence off: the store (and the DFSP's identity) is then
+    # lost whenever its pod is recreated, including by a helm upgrade that changes it.
+    acceptDataLoss: false
   # -- OpenBao: Secret with the 32-byte static seal key (key unseal.key). Created by
   # the bootstrap Job if missing (back it up!). Default: <release>-openbao-seal.
   sealSecret: ""
@@ -219,9 +235,9 @@ redis:
 
 # -- redis-ha subchart values (dandydeveloper/redis-ha 4.35.5), used when redis.mode is ha.
 redis-ha:
-  # -- Secret with the Redis password (key auth). The bootstrap Job creates it with a
-  # random password if missing. Set <release>-redis-auth when several releases share a
-  # namespace (a subchart value cannot be derived from the release name).
+  # -- Secret with the Redis password (key auth); the bootstrap Job creates it with a random
+  # password if missing. Must be <release>-redis-auth for any release not named pm4ml (the
+  # chart refuses to render otherwise: a subchart value cannot use the release name).
   existingSecret: pm4ml-redis-auth
   authKey: auth
   auth: true
@@ -238,6 +254,8 @@ redis-ha:
     hardAntiAffinity: true
     image: { repository: public.ecr.aws/docker/library/haproxy, tag: 3.0.8-alpine }
     # -- Only this chart's pods (label app.kubernetes.io/part-of: pm4ml-dfsp) reach HAProxy.
+    # Releases sharing a namespace: select app.kubernetes.io/instance: <release> instead, here
+    # and in redis-ha.networkPolicy below.
     networkPolicy:
       enabled: true
       ingressRules:
@@ -270,8 +288,17 @@ backup:
   image: amazon/aws-cli:2.22.0
 
 networkPolicies:
-  # -- Restrict the store and the single Redis to this release's pods.
+  # -- NetworkPolicies: the store and the single Redis only from this release's pods; the
+  # SDK's outbound API (4001, starts payments) only from the core connector; management-api
+  # only from the SDK; the callback port (4000) from anywhere (the load balancer).
   enabled: true
+  # -- Extra peers allowed on the SDK's outbound API (4001), e.g. a core connector deployed
+  # elsewhere: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: bank } } }]
+  sdkOutboundFrom: []
+  # -- Peers allowed on the metrics port (4004). Default: any pod (metrics hold no secrets).
+  metricsFrom: []
+  # -- Extra peers allowed on management-api's API (9000), e.g. a payment manager UI.
+  managementApiFrom: []
 
 monitoring:
   # -- prometheus.io/* annotations on the SDK pods (port 4004).

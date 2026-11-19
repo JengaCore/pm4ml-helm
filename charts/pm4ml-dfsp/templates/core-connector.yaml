@@ -30,9 +30,20 @@ spec:
       {{- with $c.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with $c.extraVolumes }}
-      volumes: {{- toYaml . | nindent 8 }}
-      {{- end }}
+      affinity:
+        {{- if $c.affinity }}{{ toYaml $c.affinity | nindent 8 }}{{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {{- include "dfsp.selector" $sel | nindent 20 }}
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- with $c.extraVolumes }}{{ toYaml . | nindent 8 }}{{ end }}
       containers:
         - name: core-connector
           image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
@@ -52,9 +63,9 @@ spec:
           securityContext: {{- toYaml . | nindent 12 }}
           {{- end }}
           resources: {{- toYaml $c.resources | nindent 12 }}
-          {{- with $c.extraVolumeMounts }}
-          volumeMounts: {{- toYaml . | nindent 12 }}
-          {{- end }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- with $c.extraVolumeMounts }}{{ toYaml . | nindent 12 }}{{ end }}
           {{- with $c.envFrom }}
           envFrom: {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -97,6 +108,7 @@ metadata:
   labels: {{- include "dfsp.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ $c.pdb.minAvailable }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels: {{- include "dfsp.selector" $sel | nindent 6 }}
 {{- end }}

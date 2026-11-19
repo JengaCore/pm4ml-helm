@@ -1,0 +1,108 @@
+name: Chart CI
+
+# Every push and pull request: static checks of charts/pm4ml-dfsp, the manifests and
+# the scripts (.github/scripts/chart-checks.sh, runnable locally), then the chart on a
+# throwaway kind cluster for the two store/Redis combinations
+# (.github/scripts/e2e-kind.sh). chart-release.yml calls this before publishing.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# github.workflow is the caller's name when called from chart-release.yml, so a
+# release never cancels, or is cancelled by, the plain CI run of the same commit.
+concurrency:
+  group: chart-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  static:
+    name: Lint, schemas, policies, scripts, docs
+    runs-on: jengacore-k8s
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Tools (pinned versions, checked SHA-256)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml >/dev/null
+          .github/scripts/install-tools.sh "$HOME/.local/bin" helm kubeconform kube-linter helm-docs shellcheck actionlint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Checks
+        run: .github/scripts/chart-checks.sh
+
+      - name: Chart version bumped when the chart changed
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --quiet "$BASE" HEAD -- charts/pm4ml-dfsp; then echo "chart unchanged"; exit 0; fi
+          new=$(sed -n 's/^version: *//p' charts/pm4ml-dfsp/Chart.yaml)
+          old=$(git show "$BASE:charts/pm4ml-dfsp/Chart.yaml" 2>/dev/null | sed -n 's/^version: *//p' || true)
+          echo "base: ${old:-none}  head: $new"
+          if [ -n "$old" ] && [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -1)" = "$old" ]; then
+            echo "::error file=charts/pm4ml-dfsp/Chart.yaml::the chart changed: raise version above $old"; exit 1
+          fi
+
+  e2e:
+    name: kind (${{ matrix.store }}, Redis ${{ matrix.redis }})
+    needs: static
+    # kind needs a Docker daemon: the dind pool.
+    runs-on: jengacore-k8s-dind
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { store: openbao, redis: ha,     values: .github/e2e/values-openbao.yaml }
+          - { store: vault,   redis: single, values: .github/e2e/values-vault.yaml }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Tools (pinned versions, checked SHA-256)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq openssl >/dev/null
+          .github/scripts/install-tools.sh "$HOME/.local/bin" helm kind docker
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl -sSfL -o "$HOME/.local/bin/kubectl" https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl
+          echo "298e19e9c6c17199011404278f0ff8168a7eca4217edad9097af577023a5620f  $HOME/.local/bin/kubectl" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/kubectl"
+
+      - name: Cluster
+        run: |
+          # Own pod and service ranges: the runner's cluster may use the defaults.
+          cat > "$RUNNER_TEMP/kind.yaml" <<'KIND'
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          networking: { podSubnet: 10.240.0.0/16, serviceSubnet: 10.250.0.0/16 }
+          KIND
+          kind create cluster --name e2e --config "$RUNNER_TEMP/kind.yaml" --wait 180s
+          kubectl -n local-path-storage wait --for=condition=ready pod --all --timeout=180s
+
+      - name: Chart dependencies
+        run: helm dependency build charts/pm4ml-dfsp
+
+      - name: End to end
+        env:
+          VALUES: ${{ matrix.values }}
+          STORE: ${{ matrix.store }}
+          REDIS: ${{ matrix.redis }}
+          REQUIRE_NETPOL: "1"   # kind's network plugin enforces NetworkPolicies
+        run: .github/scripts/e2e-kind.sh "$VALUES" "$STORE" "$REDIS"
+
+      - name: Delete the cluster
+        if: always()
+        run: kind delete cluster --name e2e || true

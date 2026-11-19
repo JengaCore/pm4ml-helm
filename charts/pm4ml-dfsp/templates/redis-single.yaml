@@ -35,7 +35,7 @@ spec:
           args: ["--appendonly", "yes", "--appendfsync", "everysec", "--save", ""]
           ports: [ { name: redis, containerPort: 6379 } ]
           readinessProbe: { exec: { command: ["redis-cli", "ping"] }, periodSeconds: 10 }
-          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 512Mi } }
           volumeMounts: [ { name: data, mountPath: /data } ]
       {{- if not .Values.redis.single.persistence.enabled }}
