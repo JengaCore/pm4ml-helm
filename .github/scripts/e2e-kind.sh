@@ -32,7 +32,7 @@ run_pod() { # <image> <labels> <uid> <command> [env JSON array]
   k delete pod "$name" --wait=false >/dev/null 2>&1 || true
 }
 store() { k exec "$R-vault-0" -- wget -qO- "http://127.0.0.1:8200/v1/$1"; }
-ca_fp() { store pki/cert/ca | jq -r .data.certificate | sha256sum | cut -c1-64; }   # SHA-256 of the CA PEM
+ca_fp() { store pki/cert/ca | jq -er .data.certificate | sha256sum | cut -c1-64; }   # SHA-256 of the CA PEM; fails without a CA
 
 step "install ($KIND, redis $MODE)"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
@@ -168,7 +168,7 @@ for _ in $(seq 1 120); do
 done
 [ "$(k get job "$R-store-restore-$REV" -o jsonpath='{.status.succeeded}')" = 1 ] || fail "restore Job did not finish"
 k logs "job/$R-store-restore-$REV"
-[ "$KIND" = vault ] && unseal_vault
+if [ "$KIND" = vault ]; then unseal_vault; k rollout restart deploy/"$R-management-api" >/dev/null; fi
 for _ in $(seq 1 90); do [ "$(store sys/seal-status | jq -r .sealed)" = false ] && break; sleep 2; done
 [ "$(ca_fp)" = "$FP1" ] || fail "restore did not bring back the same DFSP CA"
 echo "restored: same DFSP CA"
