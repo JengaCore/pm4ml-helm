@@ -70,8 +70,9 @@ helm upgrade --install mydfsp charts/pm4ml-dfsp -f charts/pm4ml-dfsp/presets/val
    refused with a message naming the new key (HA is `presets/valkey-ha.yaml`).
 2. Take a backup (backup CronJob) and keep the OpenBao seal Secret.
 3. **Vault installs only:** the old and the new StatefulSet are both `<release>-vault`,
-   and their selectors differ (immutable), so delete the old one first, keeping its pods
-   and volume: `kubectl delete statefulset <release>-vault --cascade=orphan`. Its volume
+   and their selectors differ (immutable), so delete the old one first:
+   `kubectl delete statefulset <release>-vault`. Deleting a StatefulSet does not delete
+   its volume claims (the 0.1.x chart sets no retention policy). Its volume
    claim has the same name as the new one (`data-<release>-vault-0`); not exercised: if the
    new Vault does not come up initialised on it, delete the claim and restore (step 4).
 4. Upgrade with `restore.enabled=true`: the store (OpenBao: `<release>-openbao`, a new
