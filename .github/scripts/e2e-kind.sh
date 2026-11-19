@@ -159,7 +159,12 @@ for _ in $(seq 1 150); do store sys/seal-status >/dev/null 2>&1 && break; sleep 
 helm upgrade "$R" "$CHART" -n "$NS" -f "$VALUES" "${BK[@]}" --set restore.enabled=true --timeout 10m
 REV=$(helm -n "$NS" history "$R" -o json | jq -r '.[-1].revision')
 k get job "$R-bootstrap-$REV" >/dev/null 2>&1 && fail "bootstrap must not run during a restore"
-k wait --for=condition=complete "job/$R-store-restore-$REV" --timeout=600s || fail "restore Job"
+# complete or failed, whichever comes first (backoffLimit 0: a failure is final)
+for _ in $(seq 1 120); do
+  st=$(k get job "$R-store-restore-$REV" -o jsonpath='{.status.succeeded}/{.status.failed}')
+  case "$st" in 1/*) break ;; */1) k logs "job/$R-store-restore-$REV"; fail "restore Job failed" ;; esac; sleep 5
+done
+[ "$(k get job "$R-store-restore-$REV" -o jsonpath='{.status.succeeded}')" = 1 ] || fail "restore Job did not finish"
 k logs "job/$R-store-restore-$REV"
 [ "$KIND" = vault ] && unseal_vault
 for _ in $(seq 1 90); do [ "$(store sys/seal-status | jq -r .sealed)" = false ] && break; sleep 2; done
