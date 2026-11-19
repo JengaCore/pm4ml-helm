@@ -102,8 +102,17 @@ spec:
               fi
               until [ "$(curl -s "$A/v1/sys/seal-status" | jq -r .sealed)" = "false" ]; do sleep 2; done
               tok=$(jq -r .root_token /work/throwaway.json)
-              if ! curl -sS --fail-with-body -X POST -H "X-Vault-Token: $tok" --data-binary @/work/store.snap \
-                     "$A/v1/sys/storage/raft/snapshot-force" > /work/restore.out 2>&1; then
+              # Raft needs an active node: right after unseal, Vault can answer 500 for a moment.
+              for _ in $(seq 1 30); do
+                [ "$(curl -s -o /dev/null -w '%{http_code}' "$A/v1/sys/health")" = 200 ] && break; sleep 2
+              done
+              ok=""
+              for _ in 1 2 3 4 5; do
+                if curl -sS --fail-with-body -X POST -H "X-Vault-Token: $tok" --data-binary @/work/store.snap \
+                     "$A/v1/sys/storage/raft/snapshot-force" > /work/restore.out 2>&1; then ok=1; break; fi
+                cat /work/restore.out; sleep 5
+              done
+              if [ -z "$ok" ]; then
                 cat /work/restore.out; rm -f /work/throwaway.json /work/store.snap
                 say "snapshot NOT restored (corrupt object, or taken with another seal key?)."
                 say "The store is now initialised with throwaway keys that are gone: wipe its volume"
