@@ -8,6 +8,7 @@ step() { echo; echo "=== $*"; }
 CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
 step "dependencies (verified against Chart.lock)"
+helm repo add dandydeveloper https://dandydeveloper.github.io/charts --force-update >/dev/null
 helm dependency build "$CHART" >/dev/null
 
 step "lint and render every CI values file"

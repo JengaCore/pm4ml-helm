@@ -93,7 +93,9 @@ jobs:
           kubectl -n local-path-storage wait --for=condition=ready pod --all --timeout=180s
 
       - name: Chart dependencies
-        run: helm dependency build charts/pm4ml-dfsp
+        run: |
+          helm repo add dandydeveloper https://dandydeveloper.github.io/charts --force-update
+          helm dependency build charts/pm4ml-dfsp
 
       - name: End to end
         env:
