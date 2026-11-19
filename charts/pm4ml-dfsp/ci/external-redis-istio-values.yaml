@@ -14,5 +14,6 @@ networkPolicies:
     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: bank } }
       podSelector: { matchLabels: { app: core-connector } }
 backup: { enabled: true, s3Secret: ci-dfsp-backup-s3 }
+restore: { enabled: true }        # renders the restore Job (and skips bootstrap)
 monitoring: { podMonitor: { enabled: true } }
 bootstrap: { rbac: false }

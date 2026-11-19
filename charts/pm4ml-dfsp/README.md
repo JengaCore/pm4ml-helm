@@ -82,7 +82,10 @@ The NOTES printed by `helm install` repeat these steps with your names.
 | Hub's client certificate | DFSP CA | 5 years | signed by management-api |
 
 Alert on the client certificate's expiry: it is the only renewal that needs a
-person on the hub side. Upstream bug: `POST /dfsp/servercerts` on
+person on the hub side. The MCM does not sign a renewal by itself: connection-manager
+v3.1.5 stores the new CSR as a pending enrolment (as at onboarding), and the hub's
+onboarding module deliberately never automates signing. management-api collects the
+signed certificate within a minute and hands it to the SDK without a restart. Upstream bug: `POST /dfsp/servercerts` on
 management-api 7.0.0 returns 500 (`ctx.stateMachine` is undefined), so the
 server certificate cannot be renewed on demand; the automatic renewal works.
 
@@ -118,6 +121,24 @@ Always set `loadBalancerSourceRanges` to the switch's egress addresses (ask
 the hub operator) and keep `externalTrafficPolicy: Local`. Check from outside:
 `openssl s_client -connect <callback.host>:443 -servername <callback.host>`
 must show `<dfspId> CA` as issuer once enrolled.
+
+## Backups and restore
+
+`backup.enabled` runs a CronJob that takes a Raft snapshot of the store with a
+snapshot-only AppRole and uploads it to any S3 API (`backup.s3Secret`). If the
+store's volume is lost:
+
+```sh
+helm upgrade <release> ... --set restore.enabled=true     # restores the newest snapshot
+kubectl logs -f job/<release>-store-restore-<revision>
+helm upgrade <release> ... --set restore.enabled=false    # back to normal
+```
+
+The restore Job only writes into an empty store, and the bootstrap Job is skipped while
+it is on (on an empty store it would create a new CA). With `restore.rbac` it restarts
+the store pod (OpenBao unseals itself) and management-api; Vault needs its original key
+shares. Payments keep flowing while the store is down or being restored: it is only
+on the enrolment path. Keep the OpenBao seal key Secret: the snapshot is useless without it.
 
 ## Security defaults
 
@@ -181,19 +202,32 @@ de-duplicate. See [docs/BUILDING-BLOCKS.md](../../docs/BUILDING-BLOCKS.md).
 
 ## Validation
 
-2026-11-19, sbx UAT (iso20022, GMD), release `dfsp3` = DFSP `pm4mlhelm03`, no
-change on the switch. Callback on an OpenStack Octavia load balancer; the
-DNS preflight checked against the expected address (and kept waiting on a
-wrong one); the Service kept its address through upgrades. The core connector was swapped by values only
-(`mojaloop/mojaloop-simulator:v15.5.4`, port 3000, rules file from a ConfigMap).
-Enrolment through MCM to `DFSP_CLIENT_CERT_CONFIGURED`; payments 20/20 in each
-of: pm4mlhelm03 → another PM4ML DFSP, the reverse, and a third DFSP →
-pm4mlhelm03; ledger positions read from the hub after each run matched the
-payments. The OpenBao container restarted and unsealed itself. The server
-certificate renewed itself before expiry (shortened TTL), with payments flowing
-during the renewals. Not exercised on that cluster: the bootstrap Job's Role (the test
-service account cannot create Roles; the same script ran with the operator's
-rights, `bootstrap.rbac: false`).
+On sbx UAT (ISO 20022, GMD), no change on the switch, on the Coder cluster (OpenStack,
+Cilium, Cinder volumes).
+
+**2026-11-19, final chart, release `dfsp4` = DFSP `pm4mlhelm04`**: store on a
+persistent volume, Redis HA (3 + HAProxy, password), 3 SDK replicas, NetworkPolicies
+on, read-only root file systems, core connector swapped by values
+(`mojaloop/mojaloop-simulator:v15.5.4` as non-root).
+
+| Test | Result |
+|---|---|
+| Admitted in MCM, enrolled by management-api (DNS preflight on the reserved address), CSR signed by the hub operator, reconciler wired it | ✓ |
+| Send / receive with another PM4ML DFSP | 20/20 and 20/20; ledger positions moved by exactly the payments |
+| Send / receive with a third DFSP | 10/10 and 10/10 |
+| NetworkPolicies, from a pod of another app | SDK 4001, management-api 4005/9000, store, Redis: all **closed**; 4000 (callbacks) and 4004 (metrics) open; the allowed test client reaches 4001 |
+| 100 + 100 payments both ways at once, 10 concurrent, one SDK pod deleted mid-run (graceful) | **200/200**, ledger exact |
+| Redis master **force-killed** (no grace) mid-run, 60 + 60 payments | 96/120 reported completed. Checked one by one with `GET /transfers/{id}`: 4 reported as errors had **committed**, 1 failed, 1 never got an id, 18 never reached the switch (`3208`, no money moved). Ledger = the reconciled states exactly. Failover took ~20 s; this is the case the core connector's idempotency rule exists for |
+| Backup CronJob → S3, then the store's **volume deleted** | snapshot 150 KB uploaded; 5/5 payments while the store was empty |
+| `restore.enabled=true` | Job restored the newest snapshot; **same CA fingerprint**; management-api resumed **without a new enrolment**; 10/10 each way after |
+| `helm upgrade` that recreates the store pod (the case that lost `pm4mlhelm03` without a volume) | same CA, unsealed by itself, 5/5 after |
+| Server certificate renewal (earlier run, shortened TTL) | renewed itself, payments flowing during the renewals |
+
+Not covered: the bootstrap and restore Jobs' Roles on this cluster (its service account
+cannot create Roles: the same scripts ran with the operator's rights; the Role path is
+covered by CI on kind), client certificate renewal (needs the hub to sign: see
+[Certificates and renewal](#certificates-and-renewal)), node drain (no node rights),
+EKS/AKS, a managed Redis over TLS.
 
 ## Values
 
@@ -207,6 +241,7 @@ rights, `bootstrap.rbac: false`).
 | bootstrap.enabled | bool | `true` | Job (one per Helm revision): initialises and configures the store, creates the DFSP CA (once, never replaced), the AppRoles and the runtime secrets. Idempotent. |
 | bootstrap.image | string | `"alpine/k8s:1.31.4"` |  |
 | bootstrap.rbac | bool | `true` | Create the namespaced Role it needs (Secrets only). |
+| bootstrap.serviceAccountName | string | `""` | With rbac false: an existing ServiceAccount an administrator bound to an equivalent Role (create Secrets; get/patch/update on this release's Secrets). Without one, the Job stops before initialising anything. |
 | callback.host | string | `""` | Public host name the switch calls back (in the server certificate and in MCM). Only the name is needed at install: the address can come after (see preflight). |
 | callback.ingressNginx.className | string | `"nginx"` |  |
 | callback.ingressNginx.enabled | bool | `false` |  |
@@ -288,6 +323,9 @@ rights, `bootstrap.rbac: false`).
 | redis.single.persistence.enabled | bool | `true` |  |
 | redis.single.persistence.size | string | `"2Gi"` |  |
 | redis.single.persistence.storageClass | string | `""` |  |
+| restore.enabled | bool | `false` | Job that restores the store from the newest backup snapshot (or restore.snapshotKey) after its volume was lost. Only into an empty store; the bootstrap Job is skipped while this is on. Set it back to false afterwards. Uses backup.s3Secret and backup.prefix. |
+| restore.rbac | bool | `true` | Let the Job restart the store pod (OpenBao unseals at start) and management-api. |
+| restore.snapshotKey | string | `""` | Object key of the snapshot to restore. Empty: the newest under the backup prefix. |
 | sdk.affinity | object | `{}` |  |
 | sdk.autoAcceptParticipantsPut | bool | `true` |  |
 | sdk.autoAcceptParty | bool | `true` |  |

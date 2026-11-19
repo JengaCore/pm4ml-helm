@@ -1,4 +1,5 @@
-{{- if .Values.bootstrap.enabled -}}
+{{- /* Never during a restore: on the empty store it would create a new CA. */ -}}
+{{- if and .Values.bootstrap.enabled (not .Values.restore.enabled) -}}
 {{- $f := include "dfsp.fullname" . -}}
 {{- $n := printf "%s-bootstrap" $f -}}
 # Bootstrap: creates what the other pods wait for (they stay in ContainerCreating
@@ -161,7 +162,11 @@ spec:
       labels: {{- include "dfsp.labels" . | nindent 8 }}
         app.kubernetes.io/name: bootstrap
     spec:
+      {{- if .Values.bootstrap.rbac }}
       serviceAccountName: {{ $n }}
+      {{- else if .Values.bootstrap.serviceAccountName }}
+      serviceAccountName: {{ .Values.bootstrap.serviceAccountName }}
+      {{- end }}
       restartPolicy: OnFailure
       securityContext: { runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, seccompProfile: { type: RuntimeDefault } }
       containers:

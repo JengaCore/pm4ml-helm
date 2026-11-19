@@ -276,6 +276,10 @@ bootstrap:
   image: alpine/k8s:1.31.4
   # -- Create the namespaced Role it needs (Secrets only).
   rbac: true
+  # -- With rbac false: an existing ServiceAccount an administrator bound to an equivalent
+  # Role (create Secrets; get/patch/update on this release's Secrets). Without one, the Job
+  # stops before initialising anything.
+  serviceAccountName: ""
 
 backup:
   # -- CronJob: snapshot of the store to an S3-compatible bucket.
@@ -286,6 +290,16 @@ backup:
   s3Secret: ""
   prefix: ""
   image: amazon/aws-cli:2.22.0
+
+restore:
+  # -- Job that restores the store from the newest backup snapshot (or restore.snapshotKey)
+  # after its volume was lost. Only into an empty store; the bootstrap Job is skipped while
+  # this is on. Set it back to false afterwards. Uses backup.s3Secret and backup.prefix.
+  enabled: false
+  # -- Object key of the snapshot to restore. Empty: the newest under the backup prefix.
+  snapshotKey: ""
+  # -- Let the Job restart the store pod (OpenBao unseals at start) and management-api.
+  rbac: true
 
 networkPolicies:
   # -- NetworkPolicies: the store and the single Redis only from this release's pods; the
