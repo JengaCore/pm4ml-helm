@@ -108,9 +108,13 @@ k wait --for=condition=complete "job/$R-bootstrap-2" --timeout=600s || fail "boo
 
 step "store pod restart"
 k delete pod "$R-vault-0" --wait=true
-# Running, not Ready: a sealed Vault is never Ready.
-k wait --for=jsonpath='{.status.containerStatuses[0].started}'=true pod/"$R-vault-0" --timeout=600s
-until store sys/seal-status >/dev/null 2>&1; do sleep 2; done
+# The StatefulSet recreates it; wait for it to exist, then to run (not to be Ready: a
+# sealed Vault never is), then for the API to answer. Every wait is bounded.
+for _ in $(seq 1 60); do k get pod "$R-vault-0" >/dev/null 2>&1 && break; sleep 2; done
+k wait --for=jsonpath='{.status.containerStatuses[0].started}'=true pod/"$R-vault-0" --timeout=600s \
+  || fail "store pod did not start after restart"
+for _ in $(seq 1 150); do store sys/seal-status >/dev/null 2>&1 && break; sleep 2; done
+store sys/seal-status >/dev/null 2>&1 || fail "store does not answer after restart"
 if [ "$KIND" = openbao ]; then
   for _ in $(seq 1 30); do [ "$(store sys/seal-status | jq -r .sealed)" = false ] && break; sleep 2; done
   [ "$(store sys/seal-status | jq -r .sealed)" = false ] || fail "OpenBao did not unseal itself"

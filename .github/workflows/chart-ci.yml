@@ -4,9 +4,10 @@ name: Chart CI
 # the scripts (.github/scripts/chart-checks.sh, runnable locally), then the chart on a
 # throwaway kind cluster for the two store/Redis combinations
 # (.github/scripts/e2e-kind.sh). chart-release.yml calls this before publishing.
+# push: main only; branches are covered by their pull request (one run per commit).
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -59,6 +60,14 @@ jobs:
     needs: static
     # kind needs a Docker daemon: the dind pool.
     runs-on: jengacore-k8s-dind
+    # One kind cluster per store type at a time across runs of this workflow (with
+    # max-parallel: 1, one per run): two at once starved a dind runner. A newer commit's
+    # job replaces a still-pending older one. github.workflow keeps a release's own
+    # verification (called from chart-release.yml) in a separate queue, so it is never
+    # cancelled by the CI run of the same merge.
+    concurrency:
+      group: chart-e2e-${{ github.workflow }}-${{ matrix.store }}
+      cancel-in-progress: false
     timeout-minutes: 40
     strategy:
       fail-fast: false

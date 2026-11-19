@@ -170,7 +170,9 @@ The chart injects `SDK_OUTBOUND_URL` / `MLCONN_OUTBOUND_ENDPOINT`
 `http://<release>-core-connector:<port><backendPath>`.
 
 Core connector deployed elsewhere: `coreConnector.enabled: false` and
-`coreConnector.externalBackendEndpoint: host:port`.
+`coreConnector.externalBackendEndpoint: host:port`, plus
+`networkPolicies.sdkOutboundFrom` listing the core connector's pods (required while
+`networkPolicies.enabled` is true).
 
 The core connector must keep its own record of the payments it starts (keyed by
 `homeTransactionId`) and, after an error or timeout, ask
