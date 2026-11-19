@@ -1,0 +1,5 @@
+# A managed Redis (ElastiCache, Azure Cache, Memorystore) instead of Valkey in the cluster.
+# Create the Secret with the full URL first: rediss://:<password>@<host>:6379
+valkey: { enabled: false }
+redis:
+  external: { urlSecret: <release>-redis-url, urlKey: url }

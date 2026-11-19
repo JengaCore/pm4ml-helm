@@ -6,7 +6,7 @@ description: >-
   connector, a secret store (OpenBao or Vault), Redis, backups and the mutual-TLS
   callback edge, configured from one values file.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "v24.19.3"
 keywords: [mojaloop, pm4ml, dfsp, payments]
 home: https://github.com/JengaCore/pm4ml-helm
@@ -19,7 +19,16 @@ maintainers:
   - name: jengacore
     url: https://jengacore.com
 dependencies:
-  - name: redis-ha
-    version: 4.35.5
-    repository: https://dandydeveloper.github.io/charts
-    condition: redis.ha.enabled
+  # Upstream charts, pinned. Presets for them live in values.yaml and presets/.
+  - name: openbao
+    version: 0.30.7
+    repository: https://openbao.github.io/openbao-helm
+    condition: openbao.enabled
+  - name: vault
+    version: 0.34.1
+    repository: https://helm.releases.hashicorp.com
+    condition: vault.enabled
+  - name: valkey
+    version: 1.0.0
+    repository: https://valkey.io/valkey-helm/
+    condition: valkey.enabled

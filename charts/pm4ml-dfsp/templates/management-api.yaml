@@ -30,6 +30,7 @@ spec:
   template:
     metadata:
       labels: {{- include "dfsp.labels" . | nindent 8 }}
+        {{- include "dfsp.valkeyClientLabel" . | nindent 8 }}
         app.kubernetes.io/name: management-api
       annotations:
         checksum/csr: {{ toJson (list .Values.mcm .Values.callback.host .Values.dfspId) | sha256sum | trunc 16 }}

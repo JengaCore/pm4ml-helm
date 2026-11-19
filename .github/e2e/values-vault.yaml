@@ -5,8 +5,8 @@ callback:
   preflight: { enabled: false }
   service: { type: NodePort }
 egress: { whitelistIps: [192.0.2.10] }
-store: { type: vault }
-redis: { mode: single, ha: { enabled: false } }
+openbao: { enabled: false }
+vault: { enabled: true }
 sdk: { replicaCount: 1, resources: { requests: { cpu: 50m, memory: 128Mi } } }
 managementApi: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
 coreConnector:
