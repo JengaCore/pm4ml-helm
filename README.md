@@ -205,8 +205,12 @@ ISO 20022, GMD, mTLS both ways, JWS signed and validated, test backend `test-bac
 | Vault unsealer CronJob (`jobs/vault-unsealer-cronjob.yaml`) | Vault restarted and sealed; unsealed 40 s later |
 | `init.sh` re-run on an initialised store | CA kept, backup AppRole added, secret-ids rotated; without `DFSP_ID` it stops |
 | Metrics on :4004 (`mojaloop_connector_outbound_*` counters and latency histograms, event-loop lag) | ✓ |
+| **2026-11-19, `charts/pm4ml-dfsp`** (release `dfsp3` = `pm4mlhelm03`, OpenBao, Redis-HA, core connector image set in values) | enrolled through MCM; 20/20 in each of three flows; ledger: 10 sent at 1 GMD moved `pm4mlhelm03` −20 → −10 and `pm4mlhelm01` −476 → −486, then 10 received at 2 GMD −10 → −30 / −486 → −466 |
+| OpenBao container restarted (`kill 1`, chart release) | came back `sealed: false` by itself (static seal), CA intact, 3/3 payments right after |
+| **Server certificate renewal** (DFSP CA signs it, no hub action): role TTL shortened to 47 h (under the 48 h renewal threshold) and the stored certificate's expiry set to now + 1 h, management-api restarted | `DFSP_SERVER_CERT` renewed within a minute and then every minute while each new certificate was still under the threshold; the callback endpoint served each new serial; 5/5 payments received during the renewals. TTL restored: one more renewal (32-day certificate), then it stopped |
+| Callback DNS preflight (chart) | management-api's init container waited for `callback.host` to resolve to the expected address, and kept waiting on a wrong one |
 
-Not covered yet: a run on EKS/AKS, a managed Redis with TLS (`rediss://`), the redis-ha values with persistence/NetworkPolicy (rendered, failover tested without persistence because the test cluster's volume quota is full), structured JSON logs (`LOG_IS_JSON_OUTPUT` is read but not used by SDK v24.19.3).
+Not covered yet: renewal of the **client** certificate (signed by the hub: management-api sends a new CSR to MCM 7 days before expiry and the hub operator signs it, as at enrolment; testing it needs a shorter TTL on the hub's CA, a switch change; the current one runs 90 days), a run on EKS/AKS, a managed Redis with TLS (`rediss://`), the redis-ha values with persistence/NetworkPolicy (rendered, failover tested without persistence because the test cluster's volume quota is full), structured JSON logs (`LOG_IS_JSON_OUTPUT` is read but not used by SDK v24.19.3).
 
 ## Operations
 
