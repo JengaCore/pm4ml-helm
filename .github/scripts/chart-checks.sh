@@ -38,6 +38,9 @@ must_fail "set redis.external.urlSecret"     --set valkey.enabled=false
 must_fail "acceptDataLoss"                   --set openbao.server.dataStorage.enabled=false
 must_fail "networkPolicies.sdkOutboundFrom"   --set coreConnector.enabled=false --set coreConnector.externalBackendEndpoint=cc:3003
 must_fail "dfspId is required"               --set dfspId=
+must_fail "0.1.x settings"                   --set redis.mode=ha
+must_fail "0.1.x settings"                   --set redis-ha.replicas=3
+must_fail "0.1.x settings"                   --set store.type=vault
 
 step "Kubernetes schemas ($K8S, CRDs from the datree catalog)"
 kubeconform -strict -summary -kubernetes-version "$K8S" -schema-location default -schema-location "$CRDS" "$OUT"/*.yaml

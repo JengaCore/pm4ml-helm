@@ -65,10 +65,19 @@ with the upstream chart's values. `values.yaml` holds the production defaults; t
 helm upgrade --install mydfsp charts/pm4ml-dfsp -f charts/pm4ml-dfsp/presets/valkey-ha.yaml -f my-values.yaml
 ```
 
-**Upgrading from 0.1.x:** the store and Redis now come from the upstream charts, with
-new StatefulSet and volume names, so the new store starts empty. Take a backup (backup
-CronJob), upgrade, then run the restore Job (`restore.enabled=true`): same CA, no new
-onboarding. Redis holds only payments in flight: upgrade outside traffic.
+**Upgrading from 0.1.x:**
+1. Rewrite the values: `redis.mode`, `redis-ha`, `store.type`, `store.persistence`... are
+   refused with a message naming the new key (HA is `presets/valkey-ha.yaml`).
+2. Take a backup (backup CronJob) and keep the OpenBao seal Secret.
+3. **Vault installs only:** the old and the new StatefulSet are both `<release>-vault`,
+   and their selectors differ (immutable), so delete the old one first, keeping its pods
+   and volume: `kubectl delete statefulset <release>-vault --cascade=orphan`. Its volume
+   claim has the same name as the new one (`data-<release>-vault-0`); not exercised: if the
+   new Vault does not come up initialised on it, delete the claim and restore (step 4).
+4. Upgrade with `restore.enabled=true`: the store (OpenBao: `<release>-openbao`, a new
+   volume) starts empty and the restore Job brings back the same CA, no new onboarding.
+   Then upgrade again with `restore.enabled=false`. Done on sbx UAT for OpenBao.
+5. Redis holds only payments in flight: upgrade outside traffic.
 
 ## Install
 
