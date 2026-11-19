@@ -17,8 +17,8 @@
 # Teams workflows. With CHECK_INTERVAL_SECONDS it runs forever (Docker Compose),
 # keeping the result in $STATUS_FILE for the container's healthcheck.
 #
-# Environment: DFSP_ID, CLIENT_ID (default DFSP_ID), CLIENT_SECRET or
-# CLIENT_SECRET_FILE, TOKEN_URL, MCM_URL (…/pm4mlapi), WARN_DAYS (14),
+# Environment: DFSP_ID, CLIENT_ID (default DFSP_ID), CLIENT_SECRET,
+# CLIENT_SECRET_FILE or AUTH_CLIENT_SECRET, TOKEN_URL, MCM_URL (…/pm4mlapi), WARN_DAYS (14),
 # CA_FILE (private CA of the switch's hosts), ALERT_WEBHOOK_URL or
 # ALERT_WEBHOOK_URL_FILE, CHECK_INTERVAL_SECONDS, STATUS_FILE (/tmp/cert-status).
 set -eu
@@ -30,6 +30,8 @@ MCM="${MCM_URL:?MCM_URL is required}"
 WARN_DAYS="${WARN_DAYS:-14}"
 STATUS_FILE="${STATUS_FILE:-/tmp/cert-status}"
 [ -z "${CLIENT_SECRET_FILE:-}" ] || CLIENT_SECRET="$(cat "$CLIENT_SECRET_FILE")"
+# Docker Compose: wait-for-secrets.sh exports the secret as AUTH_CLIENT_SECRET.
+CLIENT_SECRET="${CLIENT_SECRET:-${AUTH_CLIENT_SECRET:-}}"
 [ -z "${ALERT_WEBHOOK_URL_FILE:-}" ] || ALERT_WEBHOOK_URL="$(cat "$ALERT_WEBHOOK_URL_FILE" 2>/dev/null || true)"
 
 emit() { # event, msg
@@ -41,7 +43,9 @@ c() { curl -sS --max-time 30 ${CA_FILE:+--cacert "$CA_FILE"} "$@"; }
 
 notify() { # text
   [ -n "${ALERT_WEBHOOK_URL:-}" ] || return 0
-  c -o /dev/null -X POST -H 'Content-Type: application/json' \
+  # Not c(): CA_FILE is the switch's private CA and would replace the public trust
+  # store that Slack, Teams and similar webhooks need.
+  curl -sS --max-time 30 -o /dev/null -X POST -H 'Content-Type: application/json' \
     --data "$(jq -cn --arg t "$1" '{text: $t}')" "$ALERT_WEBHOOK_URL" \
     || emit "notify.failed" "could not post to the alert webhook"
 }
@@ -56,9 +60,12 @@ check() { # -> 0 ok, 1 attention or failure
   code="$(printf '%s' "$out" | tail -n1)"
   if [ "$code" != 200 ]; then emit "check.failed" "MCM answered HTTP $code"; return 1; fi
   body="$(printf '%s' "$out" | sed '$d')"
-  expiry="$(printf '%s' "$body" | jq -r '[.[]? | select(.state=="CERT_SIGNED") | .certInfo.notAfter // empty
-             | sub("\\.[0-9]+Z$"; "Z") | fromdate] | max // empty' 2>/dev/null || true)"
-  pending="$(printf '%s' "$body" | jq -r '[.[]? | select(.state=="CSR_LOADED") | .id] | join(" ")' 2>/dev/null || true)"
+  # A parse error must not read as "nothing signed yet": that would silence the alert.
+  if ! expiry="$(printf '%s' "$body" | jq -er '[.[]? | select(.state=="CERT_SIGNED") | .certInfo.notAfter // empty
+             | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdate] | max // ""' 2>&1)" \
+     || ! pending="$(printf '%s' "$body" | jq -er '[.[]? | select(.state=="CSR_LOADED") | .id] | join(" ")' 2>&1)"; then
+    emit "check.failed" "cannot read MCM's answer: ${expiry:-} ${pending:-}"; return 1
+  fi
   now="$(date -u +%s)"
   if [ -z "$expiry" ]; then
     emit "awaiting.signature" "first enrolment not signed yet${pending:+ (request $pending)}"
