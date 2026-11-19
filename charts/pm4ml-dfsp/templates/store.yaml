@@ -119,7 +119,7 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
-        {{- range list "management-api" "store-backup" "bootstrap" }}
+        {{- range list "management-api" "store-backup" "bootstrap" "store-restore" }}
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ . }}, app.kubernetes.io/instance: {{ $.Release.Name }} } }
         {{- end }}
       ports: [ { port: 8200 } ]

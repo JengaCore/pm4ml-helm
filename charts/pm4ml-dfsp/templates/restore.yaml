@@ -1,0 +1,128 @@
+{{- if .Values.restore.enabled -}}
+{{- $f := include "dfsp.fullname" . -}}
+{{- $n := printf "%s-store-restore" $f -}}
+{{- $bao := eq .Values.store.type "openbao" -}}
+# Restore after losing the store's volume: brings back the same DFSP CA, keys and
+# enrolment from a snapshot that the backup CronJob uploaded, so the DFSP does not
+# onboard again. Only into an EMPTY store: it refuses an initialised one.
+#   helm upgrade <release> ... --set restore.enabled=true   (bootstrap is skipped meanwhile)
+#   kubectl logs -f job/<release>-store-restore-<revision>
+#   helm upgrade <release> ... --set restore.enabled=false  (back to normal)
+{{- if .Values.restore.rbac }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+---
+# OpenBao can stay sealed after a snapshot restore until its process restarts: the Job
+# may delete the store pod (and only it) and restart management-api.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: [{{ include "dfsp.storeName" . }}-0]
+    verbs: ["get", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: [{{ include "dfsp.mgmtName" . }}]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $n }} }
+subjects: [ { kind: ServiceAccount, name: {{ $n }} } ]
+---
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $n }}-{{ .Release.Revision }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 0                       # never retried blindly
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: {{- include "dfsp.labels" . | nindent 8 }}
+        app.kubernetes.io/name: store-restore
+    spec:
+      restartPolicy: Never
+      {{- if .Values.restore.rbac }}
+      serviceAccountName: {{ $n }}
+      {{- else }}
+      automountServiceAccountToken: false
+      {{- end }}
+      securityContext: { runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, fsGroup: 65534, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - name: work
+          emptyDir: {}
+      containers:
+        - name: restore
+          image: {{ .Values.bootstrap.image }}      # kubectl, aws, curl, jq
+          envFrom: [ { secretRef: { name: {{ required "restore needs backup.s3Secret (the bucket the backups went to)" .Values.backup.s3Secret }} } } ]
+          env:
+            - { name: HOME, value: /work }
+            - { name: A, value: {{ include "dfsp.storeAddr" . | quote }} }
+            - { name: KIND, value: {{ .Values.store.type | quote }} }
+            - { name: PREFIX, value: {{ .Values.backup.prefix | default (printf "%s-store/" $f) | quote }} }
+            - { name: SNAPSHOT_KEY, value: {{ .Values.restore.snapshotKey | quote }} }
+            - { name: STORE_POD, value: "{{ include "dfsp.storeName" . }}-0" }
+            - { name: MGMT, value: {{ include "dfsp.mgmtName" . | quote }} }
+            - { name: RBAC, value: {{ .Values.restore.rbac | quote }} }
+          command:
+            - sh
+            - -ec
+            - |
+              say() { echo "[restore] $*"; }
+              s3() { aws ${S3_ENDPOINT:+--endpoint-url "$S3_ENDPOINT"} "$@"; }
+              key="$SNAPSHOT_KEY"
+              [ -n "$key" ] || key=$(s3 s3api list-objects-v2 --bucket "$S3_BUCKET" --prefix "$PREFIX" \
+                                       --query 'reverse(sort_by(Contents,&LastModified))[0].Key' --output text)
+              case "$key" in ""|None) say "no snapshot under s3://$S3_BUCKET/$PREFIX"; exit 1 ;; esac
+              say "snapshot: s3://$S3_BUCKET/$key"
+              s3 s3 cp "s3://$S3_BUCKET/$key" /work/store.snap >/dev/null
+              until curl -s -o /dev/null "$A/v1/sys/health?uninitcode=200&sealedcode=200"; do sleep 3; done
+              if [ "$(curl -s "$A/v1/sys/init" | jq -r .initialized)" = "true" ]; then
+                say "the store is initialised: restore only into an empty store (lost volume). Nothing done."; exit 1
+              fi
+              # A throwaway initialisation, replaced by the snapshot (its keys are discarded).
+              if [ "$KIND" = openbao ]; then body='{"recovery_shares":1,"recovery_threshold":1}'
+              else body='{"secret_shares":1,"secret_threshold":1}'; fi
+              curl -sf -X PUT "$A/v1/sys/init" --data "$body" > /work/throwaway.json
+              if [ "$KIND" = vault ]; then
+                curl -sf -X PUT "$A/v1/sys/unseal" --data "$(jq -c '{key: .keys_base64[0]}' /work/throwaway.json)" >/dev/null
+              fi
+              until [ "$(curl -s "$A/v1/sys/seal-status" | jq -r .sealed)" = "false" ]; do sleep 2; done
+              tok=$(jq -r .root_token /work/throwaway.json)
+              curl -sf -X POST -H "X-Vault-Token: $tok" --data-binary @/work/store.snap "$A/v1/sys/storage/raft/snapshot-force"
+              rm -f /work/throwaway.json /work/store.snap
+              say "restored from $key"
+              if [ "$KIND" = vault ]; then
+                say "Vault: unseal it now with the ORIGINAL key shares (those of the backed-up store)."
+              elif [ "$RBAC" = true ]; then
+                say "OpenBao: restarting the store pod so it unseals with its seal key"
+                kubectl delete pod "$STORE_POD" --wait=false >/dev/null; sleep 10
+                for _ in $(seq 1 90); do
+                  [ "$(curl -s -m 3 "$A/v1/sys/seal-status" | jq -r .sealed 2>/dev/null)" = "false" ] && break; sleep 2
+                done
+                [ "$(curl -s "$A/v1/sys/seal-status" | jq -r .sealed)" = "false" ] || { say "store still sealed"; exit 1; }
+                kubectl rollout restart deploy/"$MGMT" >/dev/null
+                say "store unsealed, management-api restarted"
+              else
+                say "OpenBao: restart the store pod ($STORE_POD) so it unseals, then management-api."
+              fi
+              # Compare with the CA before the loss (no openssl in this image: SHA-256 of the PEM).
+              say "DFSP CA PEM sha256: $(curl -s "$A/v1/pki/cert/ca" | jq -r .data.certificate | sha256sum | cut -c1-64)"
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+{{- end }}
