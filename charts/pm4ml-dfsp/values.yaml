@@ -301,6 +301,27 @@ restore:
   # -- Let the Job restart the store pod (OpenBao unseals at start) and management-api.
   rbac: true
 
+certCheck:
+  # -- CronJob watching the DFSP's client certificate (signed by the hub in MCM): fails,
+  # and posts to alertWebhook, when a renewal waits for the hub's signature or the
+  # certificate expires within warnDays. MCM notifies nobody of a renewal request.
+  enabled: true
+  schedule: "41 */6 * * *"
+  # -- Alert this many days before expiry (management-api requests the renewal at 7).
+  warnDays: 14
+  # -- Image with sh, curl and jq. Default: bootstrap.image.
+  image: ""
+  alertWebhook:
+    # -- Secret holding a Slack-compatible incoming webhook URL (Slack, Mattermost,
+    # Rocket.Chat, Teams workflow). Empty: no message, the failed Job is the signal.
+    existingSecret: ""
+    key: url
+  prometheusRule:
+    # -- PrometheusRule Pm4mlCertificateAttention (Prometheus Operator), firing while
+    # the last check has not succeeded.
+    enabled: false
+    labels: {}
+
 networkPolicies:
   # -- NetworkPolicies: the store and the single Redis only from this release's pods; the
   # SDK's outbound API (4001, starts payments) only from the core connector; management-api
