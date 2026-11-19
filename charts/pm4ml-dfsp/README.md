@@ -86,11 +86,16 @@ person on the hub side. The MCM does not sign a renewal by itself: connection-ma
 v3.1.5 stores the new CSR as a pending enrolment (as at onboarding), and the hub's
 onboarding module deliberately never automates signing. management-api collects the
 signed certificate within a minute and hands it to the SDK without a restart.
-Nothing notifies anyone of a renewal request today: management-api only logs
-`UPLOADING_DFSP_CSR`, and MCM sends no email, webhook or metric. Alert on it yourself
-(log alert, and the client certificate's expiry at 14 and 7 days) and agree with the hub
-how you tell them; the recommendation is in the docs site, DFSP onboarding, "Hub
-onboarding", "Certificate renewal". Upstream bug: `POST /dfsp/servercerts` on
+MCM tells nobody about a renewal request (no email, webhook or metric), so the chart
+watches it: the `certCheck` CronJob (on by default, every 6 hours) reads, with the
+DFSP's own MCM credentials, what MCM holds for this DFSP. It fails, and posts to
+`certCheck.alertWebhook` (any Slack-compatible incoming webhook), when a renewal waits
+for the hub's signature (`renewal.pending`) or the certificate expires within
+`certCheck.warnDays` (14). With the Prometheus Operator, `certCheck.prometheusRule`
+adds `Pm4mlCertificateAttention`; without it, the failed Job is the signal
+(`KubeJobFailed`). Validated against sbx UAT's MCM. The hub runs the same check on its
+side (switch-iac `dfsp-cert-check`, `DfspCertificateAttention`). Agree with the hub how
+you tell them a renewal is waiting. Upstream bug: `POST /dfsp/servercerts` on
 management-api 7.0.0 returns 500 (`ctx.stateMachine` is undefined), so the
 server certificate cannot be renewed on demand; the automatic renewal works.
 
@@ -270,6 +275,14 @@ EKS/AKS, a managed Redis over TLS.
 | callback.service.nodePort | string | `nil` | Fixed node port when type is NodePort. |
 | callback.service.port | int | `443` |  |
 | callback.service.type | string | `"LoadBalancer"` | LoadBalancer (cloud, MetalLB, Octavia) or NodePort (behind an F5/HAProxy in TCP mode). |
+| certCheck.alertWebhook.existingSecret | string | `""` | Secret holding a Slack-compatible incoming webhook URL (Slack, Mattermost, Rocket.Chat, Teams workflow). Empty: no message, the failed Job is the signal. |
+| certCheck.alertWebhook.key | string | `"url"` |  |
+| certCheck.enabled | bool | `true` | CronJob watching the DFSP's client certificate (signed by the hub in MCM): fails, and posts to alertWebhook, when a renewal waits for the hub's signature or the certificate expires within warnDays. MCM notifies nobody of a renewal request. |
+| certCheck.image | string | `""` | Image with sh, curl and jq. Default: bootstrap.image. |
+| certCheck.prometheusRule.enabled | bool | `false` | PrometheusRule Pm4mlCertificateAttention (Prometheus Operator), firing while the last check has not succeeded. |
+| certCheck.prometheusRule.labels | object | `{}` |  |
+| certCheck.schedule | string | `"41 */6 * * *"` |  |
+| certCheck.warnDays | int | `14` | Alert this many days before expiry (management-api requests the renewal at 7). |
 | coreConnector.affinity | object | `{}` | Default: spread replicas over nodes (preferred). |
 | coreConnector.backendPath | string | `""` | Path of the backend endpoint, if not at the root. |
 | coreConnector.enabled | bool | `true` | Deploy the DFSP's core connector with this chart. |

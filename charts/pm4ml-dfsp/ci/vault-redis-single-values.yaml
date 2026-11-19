@@ -1,5 +1,6 @@
 # CI: Vault (key shares), single Redis, NodePort callback, core connector from Secrets/volumes.
 dfspId: ci-dfsp
+certCheck: { warnDays: 21 }
 switch: { domain: switch.example.test, apiType: iso20022, currency: USD, caBundle: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----" }
 callback:
   host: ml-connect.ci.example.test
