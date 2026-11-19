@@ -265,9 +265,10 @@ OpenBao and Vault: bootstrap, backup to an S3 API, the store's volume deleted, t
 restore Job and the same CA, then the next bootstrap on the restored store (CA unchanged).
 The restore Job restarts the store pod with its Role; OpenBao unseals itself and the Job
 restarts management-api; on Vault the test unseals with the original shares, then
-restarts management-api. Also not covered: client certificate renewal (needs the hub to sign: see
-[Certificates and renewal](#certificates-and-renewal)), node drain (no node rights),
-EKS/AKS, a managed Redis over TLS.
+restarts management-api. Also not covered: the automatic trigger of a client certificate renewal at 7 days
+(the same renewal path, started by hand, was validated end to end: see "Renewing or
+replacing the client certificate by hand"), node drain (no node rights), EKS/AKS, a
+managed Redis over TLS.
 
 ## Values
 
