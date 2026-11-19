@@ -141,11 +141,13 @@ helm upgrade "$R" "$CHART" -n "$NS" -f "$VALUES" "${BK[@]}" --timeout 10m
 k create job backup-now --from=cronjob/"$R-store-backup" >/dev/null
 k wait --for=condition=complete job/backup-now --timeout=600s || fail "backup Job"
 k logs job/backup-now --all-containers | tail -2
-unseal_vault() {
+unseal_vault() { # with the original shares; the pod may have just been restarted by the Job
+  for _ in $(seq 1 150); do store sys/seal-status >/dev/null 2>&1 && break; sleep 2; done
   for i in 0 1 2; do
     key=$(k get secret "$R-store-init" -o jsonpath='{.data.init\.json}' | base64 -d | jq -r ".keys_base64[$i]")
     # shellcheck disable=SC2016  # $K expands in the pod's shell
-    k exec -i "$R-vault-0" -- sh -c 'read -r K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K" >/dev/null' <<<"$key"
+    k exec -i "$R-vault-0" -- sh -c 'read -r K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K" >/dev/null' <<<"$key" \
+      || fail "Vault rejected an original unseal share after the restore"
   done
 }
 k scale statefulset "$R-vault" --replicas=0 >/dev/null

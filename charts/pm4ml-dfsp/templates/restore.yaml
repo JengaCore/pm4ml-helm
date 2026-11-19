@@ -121,8 +121,16 @@ spec:
               fi
               rm -f /work/throwaway.json /work/store.snap
               say "restored from $key"
-              if [ "$KIND" = vault ]; then
+              if [ "$KIND" = vault ] && [ "$RBAC" = true ]; then
+                # Until it restarts, Vault can keep the throwaway seal configuration (1 share) and
+                # reject the original shares ("invalid key size 33").
+                say "Vault: restarting the store pod so it loads the restored seal configuration"
+                kubectl delete pod "$STORE_POD" --wait=false >/dev/null; sleep 10
+                for _ in $(seq 1 90); do curl -s -m 3 -o /dev/null "$A/v1/sys/seal-status" && break; sleep 2; done
+                kubectl rollout restart deploy/"$MGMT" >/dev/null
                 say "Vault: unseal it now with the ORIGINAL key shares (those of the backed-up store)."
+              elif [ "$KIND" = vault ]; then
+                say "Vault: restart the store pod ($STORE_POD), then unseal it with the ORIGINAL key shares."
               elif [ "$RBAC" = true ]; then
                 say "OpenBao: restarting the store pod so it unseals with its seal key"
                 kubectl delete pod "$STORE_POD" --wait=false >/dev/null; sleep 10
