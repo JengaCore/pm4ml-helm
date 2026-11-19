@@ -7,7 +7,12 @@ callback:
   istio: { enabled: true }
   ingressNginx: { enabled: true }
 egress: { whitelistIps: [192.0.2.10] }
-redis: { mode: external, ha: { enabled: false }, external: { urlSecret: managed-redis } }
+valkey: { enabled: false }
+redis: { external: { urlSecret: managed-redis } }
+openbao:
+  server:
+    volumes:
+      - { name: seal, secret: { secretName: ci-openbao-seal, defaultMode: 0440 } }   # CI installs the release as "ci"
 coreConnector: { enabled: false, externalBackendEndpoint: core-connector.bank.svc:3003 }
 networkPolicies:
   sdkOutboundFrom:

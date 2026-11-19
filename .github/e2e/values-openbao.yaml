@@ -13,8 +13,12 @@ managementApi: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
 coreConnector:
   replicaCount: 1
   resources: { requests: { cpu: 50m, memory: 128Mi } }
-redis-ha:
-  existingSecret: ci-redis-auth
-  hardAntiAffinity: false
-  replicas: 2
-  haproxy: { hardAntiAffinity: false, replicas: 1 }
+openbao:
+  server:
+    volumes:
+      - { name: seal, secret: { secretName: ci-openbao-seal, defaultMode: 0440 } }   # CI installs the release as "ci"
+valkey:     # HA on one node: 2 data nodes are enough to exercise replication and failover
+  persistence: { size: 1Gi }
+  replica: { enabled: true, replicas: 2 }
+  sentinel: { enabled: true, replicas: 3 }
+  haproxy: { enabled: true, replicas: 1 }

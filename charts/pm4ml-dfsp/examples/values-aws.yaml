@@ -7,10 +7,10 @@ callback:
       service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
       service.beta.kubernetes.io/aws-load-balancer-eip-allocations: <eipalloc-a>,<eipalloc-b>,<eipalloc-c>
     externalTrafficPolicy: Local
-store:
-  persistence: { storageClass: gp3-encrypted }
-# Managed Redis instead of redis-ha: ElastiCache, cluster mode disabled, TLS + AUTH.
+openbao:
+  server:
+    dataStorage: { storageClass: gp3-encrypted }
+# Managed Redis instead of Valkey: ElastiCache, cluster mode disabled, TLS + AUTH.
+valkey: { enabled: false }
 redis:
-  mode: external
-  ha: { enabled: false }
   external: { urlSecret: <release>-elasticache, urlKey: url }   # rediss://:<token>@<primary endpoint>:6379

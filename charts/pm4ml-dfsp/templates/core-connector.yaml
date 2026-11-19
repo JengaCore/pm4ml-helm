@@ -15,6 +15,7 @@ spec:
   template:
     metadata:
       labels: {{- include "dfsp.labels" . | nindent 8 }}
+        {{- include "dfsp.valkeyClientLabel" . | nindent 8 }}
         app.kubernetes.io/name: core-connector
     spec:
       automountServiceAccountToken: false

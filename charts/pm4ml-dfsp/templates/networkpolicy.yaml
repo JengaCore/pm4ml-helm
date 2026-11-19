@@ -49,3 +49,61 @@ spec:
       from: {{- toYaml . | nindent 8 }}
     {{- end }}
 {{- end }}
+{{- if .Values.networkPolicies.enabled }}
+---
+# The secret store (upstream chart): its API only from this release's management-api
+# and its Jobs (bootstrap, backup, restore). It holds the DFSP's CA and private keys.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dfsp.storeName" . }}-clients
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dfsp.storeKind" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [ { port: 8200, protocol: TCP } ]
+      from:
+        {{- range list "management-api" "store-backup" "bootstrap" "store-restore" }}
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ . }}, app.kubernetes.io/instance: {{ $.Release.Name }} } }
+        {{- end }}
+{{- end }}
+{{- if and .Values.networkPolicies.enabled .Values.valkey.enabled .Values.valkey.haproxy.enabled }}
+{{- $client := printf "%s-client" (include "dfsp.subFullname" (list . "valkey")) }}
+---
+# Valkey HA: the upstream chart's NetworkPolicy covers the Valkey pods only. HAProxy
+# (what clients connect to, and which reaches the master) and Sentinel are added here:
+# HAProxy only from this release's Valkey clients, Sentinel only from the Valkey,
+# Sentinel and HAProxy pods of this release.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dfsp.subFullname" (list . "valkey") }}-haproxy-clients
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: valkey-haproxy, app.kubernetes.io/instance: {{ .Release.Name }} }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [ { port: 6379, protocol: TCP } ]
+      from:
+        - podSelector: { matchLabels: { {{ $client }}: "true" } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dfsp.subFullname" (list . "valkey") }}-sentinel-peers
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: valkey-sentinel, app.kubernetes.io/instance: {{ .Release.Name }} }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range list "valkey" "valkey-sentinel" "valkey-haproxy" }}
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ . }}, app.kubernetes.io/instance: {{ $.Release.Name }} } }
+        {{- end }}
+{{- end }}
