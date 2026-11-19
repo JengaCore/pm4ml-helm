@@ -62,6 +62,8 @@ jobs:
     timeout-minutes: 40
     strategy:
       fail-fast: false
+      # One kind cluster at a time: two at once starved a dind runner (lost runner).
+      max-parallel: 1
       matrix:
         include:
           - { store: openbao, redis: ha,     values: .github/e2e/values-openbao.yaml }
