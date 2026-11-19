@@ -7,7 +7,7 @@ name: Chart Release
 #       helm install <release> oci://ghcr.io/jengacore/charts/pm4ml-dfsp --version <x.y.z>
 #   - cosign keyless signature of that artifact (GitHub OIDC, no key to manage):
 #       cosign verify ghcr.io/jengacore/charts/pm4ml-dfsp:<x.y.z> \
-#         --certificate-identity-regexp 'https://github.com/JengaCore/pm4ml-helm/.github/workflows/chart-release.yml@.*' \
+#         --certificate-identity https://github.com/JengaCore/pm4ml-helm/.github/workflows/chart-release.yml@refs/heads/main \
 #         --certificate-oidc-issuer https://token.actions.githubusercontent.com
 #   - git tag pm4ml-dfsp-<x.y.z> and a GitHub release with the .tgz and its SHA-256.
 on:
@@ -27,6 +27,9 @@ concurrency:
 jobs:
   version:
     name: Version to release
+    # Only main publishes: a manual run on another branch would push and sign an
+    # unreviewed chart under the same identity.
+    if: github.ref == 'refs/heads/main'
     runs-on: jengacore-k8s
     outputs:
       version: ${{ steps.v.outputs.version }}
