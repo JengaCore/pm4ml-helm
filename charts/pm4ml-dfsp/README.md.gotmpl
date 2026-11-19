@@ -85,7 +85,12 @@ Alert on the client certificate's expiry: it is the only renewal that needs a
 person on the hub side. The MCM does not sign a renewal by itself: connection-manager
 v3.1.5 stores the new CSR as a pending enrolment (as at onboarding), and the hub's
 onboarding module deliberately never automates signing. management-api collects the
-signed certificate within a minute and hands it to the SDK without a restart. Upstream bug: `POST /dfsp/servercerts` on
+signed certificate within a minute and hands it to the SDK without a restart.
+Nothing notifies anyone of a renewal request today: management-api only logs
+`UPLOADING_DFSP_CSR`, and MCM sends no email, webhook or metric. Alert on it yourself
+(log alert, and the client certificate's expiry at 14 and 7 days) and agree with the hub
+how you tell them; the recommendation is in the docs site, DFSP onboarding, "Hub
+onboarding", "Certificate renewal". Upstream bug: `POST /dfsp/servercerts` on
 management-api 7.0.0 returns 500 (`ctx.stateMachine` is undefined), so the
 server certificate cannot be renewed on demand; the automatic renewal works.
 
