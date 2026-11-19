@@ -35,8 +35,7 @@ jobs:
 
       - name: Tools (pinned versions, checked SHA-256)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml xz-utils >/dev/null
-          .github/scripts/install-tools.sh "$HOME/.local/bin" helm kubeconform kube-linter helm-docs shellcheck actionlint
+          .github/scripts/install-tools.sh "$HOME/.local/bin" helm kubeconform kube-linter helm-docs shellcheck actionlint yq
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Checks
@@ -80,12 +79,8 @@ jobs:
 
       - name: Tools (pinned versions, checked SHA-256)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq jq openssl >/dev/null
-          .github/scripts/install-tools.sh "$HOME/.local/bin" helm kind docker
+          .github/scripts/install-tools.sh "$HOME/.local/bin" helm kind docker kubectl jq
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          curl -sSfL -o "$HOME/.local/bin/kubectl" https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl
-          echo "298e19e9c6c17199011404278f0ff8168a7eca4217edad9097af577023a5620f  $HOME/.local/bin/kubectl" | sha256sum -c -
-          chmod +x "$HOME/.local/bin/kubectl"
 
       - name: Cluster
         run: |
