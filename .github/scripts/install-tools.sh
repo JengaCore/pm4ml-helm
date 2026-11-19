@@ -2,7 +2,8 @@
 # Installs the CI tools at pinned versions, each checked against a pinned SHA-256
 # (no install scripts piped to a shell, no "latest"). Bump a version together with
 # its checksum, taken from the release's own checksum file where it publishes one.
-# Needs curl, tar, gzip and xz (xz-utils) on the runner.
+# Needs only curl, tar, gzip and python3 on the runner (no apt: the Ubuntu archive was
+# unreachable from the runners on 2026-11-19 and took CI down with it).
 #   install-tools.sh <dir> helm kubeconform kube-linter helm-docs shellcheck actionlint kind docker
 set -euo pipefail
 DIR="$1"; shift; mkdir -p "$DIR"; W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
@@ -26,7 +27,19 @@ for t in "$@"; do
                  tar -xzf "$W/hd.tgz" -C "$DIR" helm-docs ;;
     shellcheck)  fetch https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
                    8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 sc.txz
-                 tar -xJf "$W/sc.txz" -C "$W"; mv "$W/shellcheck-v0.11.0/shellcheck" "$DIR/" ;;
+                 # .tar.xz only; python3's lzma when the xz tool is absent.
+                 if command -v xz >/dev/null; then tar -xJf "$W/sc.txz" -C "$W"
+                 else python3 -c 'import sys,tarfile; tarfile.open(sys.argv[1], "r:xz").extractall(sys.argv[2], filter="data")' "$W/sc.txz" "$W"; fi
+                 mv "$W/shellcheck-v0.11.0/shellcheck" "$DIR/" ;;
+    yq)          fetch https://github.com/mikefarah/yq/releases/download/v4.54.3/yq_linux_amd64 \
+                   129534601871538efe0ba4c5e62a34fb1d5f469bcb975c4fddeb467d82974973 yq
+                 install -m 0755 "$W/yq" "$DIR/yq" ;;
+    jq)          fetch https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-linux-amd64 \
+                   020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d jq
+                 install -m 0755 "$W/jq" "$DIR/jq" ;;
+    kubectl)     fetch https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl \
+                   298e19e9c6c17199011404278f0ff8168a7eca4217edad9097af577023a5620f kubectl
+                 install -m 0755 "$W/kubectl" "$DIR/kubectl" ;;
     actionlint)  fetch https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
                    8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 al.tgz
                  tar -xzf "$W/al.tgz" -C "$DIR" actionlint ;;

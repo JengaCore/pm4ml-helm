@@ -32,7 +32,7 @@ run_pod() { # <image> <labels> <uid> <command> [env JSON array]
   k delete pod "$name" --wait=false >/dev/null 2>&1 || true
 }
 store() { k exec "$R-vault-0" -- wget -qO- "http://127.0.0.1:8200/v1/$1"; }
-ca_fp() { store pki/cert/ca | jq -r .data.certificate | openssl x509 -noout -fingerprint -sha256; }
+ca_fp() { store pki/cert/ca | jq -r .data.certificate | sha256sum | cut -c1-64; }   # SHA-256 of the CA PEM
 
 step "install ($KIND, redis $MODE)"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
