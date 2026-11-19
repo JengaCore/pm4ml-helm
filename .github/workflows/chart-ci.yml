@@ -60,18 +60,13 @@ jobs:
     needs: static
     # kind needs a Docker daemon: the dind pool.
     runs-on: jengacore-k8s-dind
-    # One kind cluster per store type at a time across runs of this workflow (with
-    # max-parallel: 1, one per run): two at once starved a dind runner. A newer commit's
-    # job replaces a still-pending older one. github.workflow keeps a release's own
-    # verification (called from chart-release.yml) in a separate queue, so it is never
-    # cancelled by the CI run of the same merge.
-    concurrency:
-      group: chart-e2e-${{ github.workflow }}-${{ matrix.store }}
-      cancel-in-progress: false
     timeout-minutes: 40
     strategy:
       fail-fast: false
-      # One kind cluster at a time: two at once starved a dind runner (lost runner).
+      # One kind cluster per run: two at once from one run starved a dind runner (lost
+      # runner). Separate runs (two PRs, a merge and its release) can still overlap; the
+      # dind pool itself is capped at 4 runners (internal-infra github-runners). No
+      # cross-run queue: a concurrency group would cancel other PRs' pending jobs.
       max-parallel: 1
       matrix:
         include:
