@@ -224,10 +224,11 @@ on, read-only root file systems, core connector swapped by values
 | Server certificate renewal (earlier run, shortened TTL) | renewed itself, payments flowing during the renewals |
 
 Not covered on this cluster: the bootstrap and restore Jobs' Roles (its service account
-cannot create Roles: the same scripts ran with the operator's rights). Both Role paths run
-in CI on kind, for OpenBao and Vault: bootstrap, then backup to an S3 API, the store's
-volume deleted, the restore Job (which restarts the store pod and management-api itself),
-the same CA. Also not covered: client certificate renewal (needs the hub to sign: see
+cannot create Roles: the same scripts ran with the operator's rights). In CI on kind, for
+OpenBao and Vault: bootstrap, backup to an S3 API, the store's volume deleted, then the
+restore Job and the same CA, then the next bootstrap on the restored store (CA unchanged).
+On OpenBao the restore Job restarts the store pod and management-api with its Role; on
+Vault the test unseals with the original shares. Also not covered: client certificate renewal (needs the hub to sign: see
 [Certificates and renewal](#certificates-and-renewal)), node drain (no node rights),
 EKS/AKS, a managed Redis over TLS.
 

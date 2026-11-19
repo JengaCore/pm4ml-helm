@@ -165,6 +165,12 @@ k logs "job/$R-store-restore-$REV"
 for _ in $(seq 1 90); do [ "$(store sys/seal-status | jq -r .sealed)" = false ] && break; sleep 2; done
 [ "$(ca_fp)" = "$FP1" ] || fail "restore did not bring back the same DFSP CA"
 echo "restored: same DFSP CA"
+# Back to normal: the next revision's bootstrap Job runs on the restored store.
 helm upgrade "$R" "$CHART" -n "$NS" -f "$VALUES" "${BK[@]}" --timeout 10m
+k wait --for=condition=complete "job/$R-bootstrap-$((REV + 1))" --timeout=600s || fail "bootstrap after the restore"
+[ "$(ca_fp)" = "$FP1" ] || fail "bootstrap changed the DFSP CA of the restored store"
+k rollout restart deploy/"$R-management-api" >/dev/null
+k rollout status deploy/"$R-management-api" --timeout=600s || fail "management-api after the restore"
+echo "bootstrap after the restore: CA unchanged, management-api up"
 
 step "PASS ($KIND, redis $MODE)"
