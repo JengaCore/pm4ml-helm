@@ -136,9 +136,10 @@ helm upgrade <release> ... --set restore.enabled=false    # back to normal
 
 The restore Job only writes into an empty store, and the bootstrap Job is skipped while
 it is on (on an empty store it would create a new CA). With `restore.rbac` it restarts
-the store pod and management-api: OpenBao then unseals itself; Vault waits for its
-**original** key shares (before that restart Vault can keep the throwaway seal setting
-and reject them with `invalid key size 33`). Payments keep flowing while the store is down or being restored: it is only
+the store pod: OpenBao then unseals itself and the Job restarts management-api; Vault
+waits for its **original** key shares (before that restart Vault can keep the throwaway
+seal setting and reject them with `invalid key size 33`), after which you restart
+management-api. Payments keep flowing while the store is down or being restored: it is only
 on the enrolment path. Keep the OpenBao seal key Secret: the snapshot is useless without it.
 
 ## Security defaults
@@ -228,8 +229,9 @@ Not covered on this cluster: the bootstrap and restore Jobs' Roles (its service 
 cannot create Roles: the same scripts ran with the operator's rights). In CI on kind, for
 OpenBao and Vault: bootstrap, backup to an S3 API, the store's volume deleted, then the
 restore Job and the same CA, then the next bootstrap on the restored store (CA unchanged).
-The restore Job restarts the store pod and management-api with its Role; OpenBao unseals
-itself, and on Vault the test unseals with the original shares. Also not covered: client certificate renewal (needs the hub to sign: see
+The restore Job restarts the store pod with its Role; OpenBao unseals itself and the Job
+restarts management-api; on Vault the test unseals with the original shares, then
+restarts management-api. Also not covered: client certificate renewal (needs the hub to sign: see
 [Certificates and renewal](#certificates-and-renewal)), node drain (no node rights),
 EKS/AKS, a managed Redis over TLS.
 

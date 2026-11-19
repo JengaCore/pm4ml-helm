@@ -127,8 +127,10 @@ spec:
                 say "Vault: restarting the store pod so it loads the restored seal configuration"
                 kubectl delete pod "$STORE_POD" --wait=false >/dev/null; sleep 10
                 for _ in $(seq 1 90); do curl -s -m 3 -o /dev/null "$A/v1/sys/seal-status" && break; sleep 2; done
-                kubectl rollout restart deploy/"$MGMT" >/dev/null
-                say "Vault: unseal it now with the ORIGINAL key shares (those of the backed-up store)."
+                curl -s -m 3 -o /dev/null "$A/v1/sys/seal-status" || { say "the store does not answer after its restart"; exit 1; }
+                # management-api is not restarted here: Vault stays sealed until the custodians act.
+                say "Vault: unseal it now with the ORIGINAL key shares (those of the backed-up store),"
+                say "then restart management-api: kubectl rollout restart deploy/$MGMT"
               elif [ "$KIND" = vault ]; then
                 say "Vault: restart the store pod ($STORE_POD), then unseal it with the ORIGINAL key shares."
               elif [ "$RBAC" = true ]; then
