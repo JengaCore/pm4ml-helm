@@ -27,6 +27,9 @@ app.kubernetes.io/instance: {{ .ctx.Release.Name }}
 {{- if and (eq .Values.redis.mode "ha") (ne .Release.Name "pm4ml") (eq (index .Values "redis-ha" "existingSecret") "pm4ml-redis-auth") -}}
 {{- fail (printf "redis-ha.existingSecret: set it to %s-redis-auth (the default pm4ml-redis-auth is for a release named pm4ml; releases sharing a namespace must not share a Redis password)" .Release.Name) -}}
 {{- end -}}
+{{- if and .Values.networkPolicies.enabled (not .Values.coreConnector.enabled) (not .Values.networkPolicies.sdkOutboundFrom) -}}
+{{- fail "coreConnector.enabled is false and networkPolicies are on: list the external core connector's pods in networkPolicies.sdkOutboundFrom, or no payment request reaches the SDK (port 4001)" -}}
+{{- end -}}
 {{- if and (not .Values.store.persistence.enabled) (not .Values.store.persistence.acceptDataLoss) -}}
 {{- fail "store.persistence.enabled is false: the store (DFSP CA, keys, enrolment) would be lost whenever its pod is recreated, including by a helm upgrade. Set store.persistence.acceptDataLoss: true only for throwaway tests" -}}
 {{- end -}}

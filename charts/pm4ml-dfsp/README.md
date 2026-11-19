@@ -33,7 +33,7 @@ Released versions are OCI artifacts on GHCR, signed with cosign (keyless):
 ```sh
 helm show values oci://ghcr.io/jengacore/charts/pm4ml-dfsp --version <x.y.z>
 cosign verify ghcr.io/jengacore/charts/pm4ml-dfsp:<x.y.z> \
-  --certificate-identity-regexp 'https://github.com/JengaCore/pm4ml-helm/.github/workflows/chart-release.yml@.*' \
+  --certificate-identity https://github.com/JengaCore/pm4ml-helm/.github/workflows/chart-release.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

@@ -32,6 +32,7 @@ must_fail "set it to other-redis-auth"       --set redis-ha.existingSecret=pm4ml
 must_fail "set redis.ha.enabled: false"      --set redis-ha.existingSecret=x --set redis.mode=single
 must_fail "set redis.ha.enabled: true"       --set redis-ha.existingSecret=x --set redis.ha.enabled=false
 must_fail "acceptDataLoss"                   --set redis-ha.existingSecret=x --set store.persistence.enabled=false
+must_fail "networkPolicies.sdkOutboundFrom"   --set redis-ha.existingSecret=x --set coreConnector.enabled=false --set coreConnector.externalBackendEndpoint=cc:3003
 must_fail "dfspId is required"               --set redis-ha.existingSecret=x --set dfspId=
 
 step "Kubernetes schemas ($K8S, CRDs from the datree catalog)"

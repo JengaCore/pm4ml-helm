@@ -9,6 +9,10 @@ callback:
 egress: { whitelistIps: [192.0.2.10] }
 redis: { mode: external, ha: { enabled: false }, external: { urlSecret: managed-redis } }
 coreConnector: { enabled: false, externalBackendEndpoint: core-connector.bank.svc:3003 }
+networkPolicies:
+  sdkOutboundFrom:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: bank } }
+      podSelector: { matchLabels: { app: core-connector } }
 backup: { enabled: true, s3Secret: ci-dfsp-backup-s3 }
 monitoring: { podMonitor: { enabled: true } }
 bootstrap: { rbac: false }
