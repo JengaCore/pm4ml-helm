@@ -101,6 +101,28 @@ you tell them a renewal is waiting. Upstream bug: `POST /dfsp/servercerts` on
 management-api 7.0.0 returns 500 (`ctx.stateMachine` is undefined), so the
 server certificate cannot be renewed on demand; the automatic renewal works.
 
+### Renewing or replacing the client certificate by hand
+
+Renewal is automatic on the DFSP side; a person can still start one at any time
+(after a suspected key leak, before a planned change, to test the procedure):
+
+```sh
+kubectl -n <ns> exec deploy/<release>-management-api -- \
+  wget -qO- --header 'Content-Type: application/json' \
+  --post-data '{"reason":"<why>"}' http://127.0.0.1:9000/recreate/outboundTLS
+```
+
+management-api creates a new key and CSR and sends it to MCM; `certCheck` and the hub's
+check report `renewal.pending`; the hub operator signs it; management-api installs the
+new certificate within about two minutes, with no restart. Validated on sbx UAT
+(`pm4mlhelm04`, 2026-11-19): request 12 signed, new serial in use, payments 10/10 each
+way before, during and after, both checks back to `cert.ok`. The previous certificate
+is not revoked and stays valid until it expires: say so to the hub if the reason is a
+leaked key. `/recreate/JWS` does the same for the JWS signing key (peers pick up the
+new key from MCM; not exercised here). The server certificate (callbacks) cannot be
+renewed by hand on management-api 7.0.0 (`POST /dfsp/servercerts` answers 500); it
+renews itself 2 days before expiry.
+
 ## Callback address
 
 The switch calls the DFSP at `https://<callback.host>:443`, with mutual TLS
