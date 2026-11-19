@@ -53,13 +53,14 @@ FP1=$(ca_fp); echo "DFSP CA: $FP1"
 [ -n "$FP1" ] || fail "no DFSP CA"
 
 step "Redis"
-k rollout status deploy/"$R-management-api" --timeout=300s || fail "management-api not ready"
+# Generous timeouts: first image pulls on a fresh CI node are slow.
+k rollout status deploy/"$R-management-api" --timeout=900s || fail "management-api not ready"
 RH="$R-redis"; [ "$MODE" = ha ] && RH="$R-redis-ha-haproxy"
 if [ "$MODE" = ha ]; then
-  k rollout status statefulset/"$R-redis-ha-server" --timeout=300s
-  k rollout status deploy/"$R-redis-ha-haproxy" --timeout=300s
+  k rollout status statefulset/"$R-redis-ha-server" --timeout=600s
+  k rollout status deploy/"$R-redis-ha-haproxy" --timeout=600s
   sleep 10   # HAProxy marks the master UP after its first health checks
-else k rollout status statefulset/"$R-redis" --timeout=300s; fi
+else k rollout status statefulset/"$R-redis" --timeout=600s; fi
 redis_probe() { # <labels> <command> [auth Secret] -> output
   local env='[]'
   # The password reaches the probe from the Secret (env valueFrom), never on a command line.
@@ -107,7 +108,7 @@ k wait --for=condition=complete "job/$R-bootstrap-2" --timeout=600s || fail "boo
 
 step "store pod restart"
 k delete pod "$R-vault-0" --wait=true
-k wait --for=condition=ready pod/"$R-vault-0" --timeout=300s || true
+k wait --for=condition=ready pod/"$R-vault-0" --timeout=600s || true
 if [ "$KIND" = openbao ]; then
   for _ in $(seq 1 30); do [ "$(store sys/seal-status | jq -r .sealed)" = false ] && break; sleep 2; done
   [ "$(store sys/seal-status | jq -r .sealed)" = false ] || fail "OpenBao did not unseal itself"
