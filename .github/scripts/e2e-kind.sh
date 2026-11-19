@@ -78,7 +78,9 @@ if [ "$MODE" = ha ]; then
 else
   redis_probe "$OWN" "timeout 10 redis-cli -h $RH ping" | grep -q PONG || fail "Redis"
 fi
-other=$(redis_probe "app.kubernetes.io/name=intruder" "timeout 8 redis-cli -h $RH ping || echo BLOCKED" | tail -1)
+# grep, not tail: the shell's "Terminated" (stderr) can land after BLOCKED in the log.
+if redis_probe "app.kubernetes.io/name=intruder" "timeout 8 redis-cli -h $RH ping || echo BLOCKED" | grep -q BLOCKED; then
+  other=BLOCKED; else other=REACHABLE; fi
 echo "Redis from a pod of another app: $other"
 if [ "$other" != BLOCKED ] && [ "${REQUIRE_NETPOL:-}" = 1 ]; then fail "Redis reachable from any pod"; fi
 
