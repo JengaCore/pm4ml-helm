@@ -1,0 +1,14 @@
+# CI: managed Redis, Istio + ingress-nginx callbacks, external core connector, backups, PodMonitor.
+dfspId: ci-dfsp
+switch: { domain: switch.example.test, currency: USD }
+callback:
+  host: ml-connect.ci.example.test
+  service: { enabled: false }
+  istio: { enabled: true }
+  ingressNginx: { enabled: true }
+egress: { whitelistIps: [192.0.2.10] }
+redis: { mode: external, ha: { enabled: false }, external: { urlSecret: managed-redis } }
+coreConnector: { enabled: false, externalBackendEndpoint: core-connector.bank.svc:3003 }
+backup: { enabled: true, s3Secret: ci-dfsp-backup-s3 }
+monitoring: { podMonitor: { enabled: true } }
+bootstrap: { rbac: false }

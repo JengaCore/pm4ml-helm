@@ -1,0 +1,51 @@
+{{- if .Values.networkPolicies.enabled }}
+{{- $np := .Values.networkPolicies }}
+# The SDK: callbacks (4000) from anywhere, as the load balancer forwards them; the
+# outbound API (4001), which starts payments without authentication, only from the
+# core connector; metrics (4004) from metricsFrom (default: any pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dfsp.sdkName" . }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "dfsp.selector" (dict "name" "sdk-scheme-adapter" "ctx" .) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [ { port: 4000, protocol: TCP } ]
+    {{- if or .Values.coreConnector.enabled $np.sdkOutboundFrom }}
+    - ports: [ { port: 4001, protocol: TCP } ]
+      from:
+        {{- if .Values.coreConnector.enabled }}
+        - podSelector:
+            matchLabels: {{- include "dfsp.selector" (dict "name" "core-connector" "ctx" .) | nindent 14 }}
+        {{- end }}
+        {{- with $np.sdkOutboundFrom }}{{ toYaml . | nindent 8 }}{{ end }}
+    {{- end }}
+    - ports: [ { port: 4004, protocol: TCP } ]
+      {{- with $np.metricsFrom }}
+      from: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# management-api: the control channel (4005) only from the SDK; its API (9000) only from
+# managementApiFrom (default: nobody).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dfsp.mgmtName" . }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "dfsp.selector" (dict "name" "management-api" "ctx" .) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [ { port: 4005, protocol: TCP } ]
+      from:
+        - podSelector:
+            matchLabels: {{- include "dfsp.selector" (dict "name" "sdk-scheme-adapter" "ctx" .) | nindent 14 }}
+    {{- with $np.managementApiFrom }}
+    - ports: [ { port: 9000, protocol: TCP } ]
+      from: {{- toYaml . | nindent 8 }}
+    {{- end }}
+{{- end }}

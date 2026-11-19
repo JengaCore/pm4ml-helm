@@ -56,7 +56,7 @@ data:
     #!/bin/sh
     set -eu
     R="{{ $f }}"; A="{{ include "dfsp.storeAddr" . }}"; KIND="{{ .Values.store.type }}"
-    DFSP_ID="{{ .Values.dfspId }}"; CA_CN="{{ .Values.dfspId }} CA"; CA_O="{{ .Values.mcm.subject.organization | default .Values.dfspId }}"
+    CA_CN="{{ .Values.dfspId }} CA"; CA_O="{{ .Values.mcm.subject.organization | default .Values.dfspId }}"
     REDIS_MODE="{{ .Values.redis.mode }}"; REDIS_AUTH="{{ include "dfsp.redisAuthSecret" . }}"
     SEAL="{{ include "dfsp.sealSecret" . }}"; REDIS_HOST="{{ include "dfsp.redisHost" . }}"
     EXT_SECRET="{{ .Values.redis.external.urlSecret }}"; EXT_KEY="{{ .Values.redis.external.urlKey }}"
@@ -98,7 +98,8 @@ data:
     TOKEN=""
     if [ "$(api GET sys/init | jq -r .initialized)" != "true" ]; then
       echo x > "$T/probe"
-      kubectl create secret generic "$R-store-init" --from-file=probe="$T/probe" --dry-run=server -o name >/dev/null \
+      kubectl create secret generic "$R-store-init" --from-file=probe="$T/probe" --dry-run=client -o yaml \
+        | kubectl apply --dry-run=server -f - >/dev/null \
         || { say "cannot write Secret $R-store-init: nothing initialised"; exit 1; }
       if [ "$KIND" = openbao ]; then body='{"recovery_shares":5,"recovery_threshold":3}'; else body='{"secret_shares":5,"secret_threshold":3}'; fi
       api PUT sys/init "$body" > "$T/init.json"

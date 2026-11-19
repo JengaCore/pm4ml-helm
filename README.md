@@ -21,7 +21,14 @@ helm -n dfsp install mydfsp charts/pm4ml-dfsp -f my-values.yaml
 ```
 
 See [charts/pm4ml-dfsp/README.md](charts/pm4ml-dfsp/README.md) (values
-reference, bring your own core connector, examples). The rest of this README
+reference, bring your own core connector, examples).
+
+Releases: `oci://ghcr.io/jengacore/charts/pm4ml-dfsp`, signed with cosign,
+published by `.github/workflows/chart-release.yml` when `main` carries a new
+chart version. Every push runs `.github/workflows/chart-ci.yml` (static checks
+in `.github/scripts/chart-checks.sh`, then an install on kind). The
+switch-connector-sdk as an alternative to PM4ML is planned for a later version:
+[docs/NEXT-SWITCH-CONNECTOR-SDK.md](docs/NEXT-SWITCH-CONNECTOR-SDK.md). The rest of this README
 describes the earlier layout (upstream chart + post-renderer + scripts), kept
 for existing installs.
 
@@ -80,7 +87,7 @@ NS=$NS STORE=vault DFSP_ID=<dfsp id> ./secret-store/init.sh   # writes ./$NS-pm4
 # 2. Secrets (prompts for the client secret). With redis/values-redis-ha.yaml: REDIS_HA=1
 NS=$NS ./scripts/create-mcm-secrets.sh
 
-# 3. Values: copy, fill every CHANGE ME
+# 3. Values: copy, fill every CHANGE ME (with redis-ha: the SDK's redis.host is <release>-redis-ha-haproxy)
 cp helm-values/values-pm4ml.yaml helm-values/values-local.yaml && $EDITOR helm-values/values-local.yaml
 
 # 4. PM4ML

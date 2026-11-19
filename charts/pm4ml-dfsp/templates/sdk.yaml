@@ -49,6 +49,8 @@ spec:
           secret: { secretName: {{ include "dfsp.fullname" . }}-jws, defaultMode: 0440, items: [ { key: jws-signing.key, path: jwsSigningKey.key } ] }
         - name: jws-peers
           emptyDir: {}
+        - name: tmp
+          emptyDir: {}
       containers:
         - name: sdk-scheme-adapter
           image: "{{ .Values.sdk.image.repository }}:{{ .Values.sdk.image.tag }}"
@@ -69,12 +71,13 @@ spec:
           lifecycle:
             preStop:
               exec: { command: ["sh", "-c", "sleep {{ .Values.sdk.preStopSeconds }}"] }
-          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           resources: {{- toYaml .Values.sdk.resources | nindent 12 }}
           volumeMounts:
             - { name: tls, mountPath: /secrets/tls, readOnly: true }
             - { name: jws-key, mountPath: /secrets/jws, readOnly: true }
             - { name: jws-peers, mountPath: /jwsVerificationKeys }
+            - { name: tmp, mountPath: /tmp }
           env:
             - { name: DFSP_ID, value: {{ .Values.dfspId | quote }} }
             - { name: LOG_LEVEL, value: {{ .Values.sdk.logLevel | quote }} }
@@ -156,6 +159,7 @@ metadata:
   labels: {{- include "dfsp.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ .Values.sdk.pdb.minAvailable }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels: {{- include "dfsp.selector" $sel | nindent 6 }}
 {{- end }}

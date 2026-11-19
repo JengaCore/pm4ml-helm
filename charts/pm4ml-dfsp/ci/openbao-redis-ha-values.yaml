@@ -1,0 +1,10 @@
+# CI: the defaults (OpenBao, Redis HA, LoadBalancer callback) with the required values.
+dfspId: ci-dfsp
+switch: { domain: switch.example.test, currency: USD }
+callback:
+  host: ml-connect.ci.example.test
+  preflight: { enabled: false }
+egress: { whitelistIps: [192.0.2.10] }
+mcm: { subject: { organization: CI DFSP, country: RW, locality: Kigali } }
+redis-ha:
+  existingSecret: ci-redis-auth   # CI installs the release as "ci"

@@ -11,6 +11,10 @@
 #      helm upgrade --install <release>-redis dandydeveloper/redis-ha --version 4.35.5 \
 #        -n <ns> -f /tmp/redis-ha.yaml
 #
+# 3. In the payment manager's values, point the SDK's wait-for-redis init
+#    container at HAProxy: sdk-scheme-adapter.sdk-scheme-adapter-api-svc.redis.host:
+#    <release>-redis-ha-haproxy (validated with AUTH on: the ping check passes).
+#
 # Turning AUTH on for a redis-ha that already runs without it does not roll:
 # new replicas cannot authenticate to the old master. Restart all Redis pods
 # together, in a maintenance window.

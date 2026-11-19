@@ -1,0 +1,3 @@
+self-hosted-runner:
+  # ARC scale sets (JengaCore/internal-infra github-runners)
+  labels: [jengacore-k8s, jengacore-k8s-dind]

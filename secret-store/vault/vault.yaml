@@ -19,6 +19,9 @@ data:
     # Integrated storage (Raft), single node: supports online snapshots, which
     # is how the store is backed up (secret-store/backup.sh). The file backend
     # it replaces had no consistent online backup.
+    # Upgrading a store created with the file backend (an earlier commit of this
+    # branch): migrate it first (docs/PRODUCTION.md, "Upgrading a store from file to Raft"), or
+    # it comes up uninitialised on this config and the DFSP must onboard again.
     storage "raft" {
       path    = "/vault/file"
       node_id = "pm4ml-vault-0"

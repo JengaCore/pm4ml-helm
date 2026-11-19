@@ -26,12 +26,15 @@ spec:
               secret: { secretName: {{ $f }}-store-backup, defaultMode: 0440 }
             - name: out
               emptyDir: {}
+            - name: home
+              emptyDir: {}
           initContainers:
             - name: snapshot
               image: {{ ternary .Values.store.image.openbao .Values.store.image.vault (eq .Values.store.type "openbao") }}
               env:
                 - { name: BAO_ADDR, value: {{ include "dfsp.storeAddr" . | quote }} }
                 - { name: VAULT_ADDR, value: {{ include "dfsp.storeAddr" . | quote }} }
+                - { name: HOME, value: /tmp }
               command:
                 - sh
                 - -ec
@@ -40,10 +43,12 @@ spec:
                   T=$($B write -field=token auth/approle/login role_id="$(cat /approle/role-id)" secret_id="$(cat /approle/secret-id)")
                   BAO_TOKEN=$T VAULT_TOKEN=$T $B operator raft snapshot save /out/store.snap
                   echo "snapshot: $(wc -c < /out/store.snap) bytes"
-              securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+              resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
               volumeMounts:
                 - { name: approle, mountPath: /approle, readOnly: true }
                 - { name: out, mountPath: /out }
+                - { name: home, mountPath: /tmp }
           containers:
             - name: upload
               image: {{ .Values.backup.image }}
@@ -58,7 +63,7 @@ spec:
                   key="${PREFIX}store-$(date -u +%Y%m%dT%H%M%SZ).snap"
                   aws ${S3_ENDPOINT:+--endpoint-url "$S3_ENDPOINT"} s3 cp /out/store.snap "s3://$S3_BUCKET/$key"
                   echo "uploaded s3://$S3_BUCKET/$key"
-              securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
               resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 256Mi } }
-              volumeMounts: [ { name: out, mountPath: /out, readOnly: true } ]
+              volumeMounts: [ { name: out, mountPath: /out, readOnly: true }, { name: home, mountPath: /tmp } ]
 {{- end }}

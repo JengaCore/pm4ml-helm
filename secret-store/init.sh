@@ -15,7 +15,8 @@
 #
 # Re-running on an initialised store (ROOT_TOKEN=... or the init file present):
 # creates what is missing (the CA on a store set up before it was added, the
-# backup AppRole) and rotates both AppRole secret-ids. It never replaces an
+# backup AppRole), rotates both AppRole secret-ids (older ones are destroyed and
+# management-api restarted) and removes the AppRoles of earlier versions. It never replaces an
 # existing CA: that would mean onboarding the DFSP again.
 # INIT_ONLY=1: initialise (and unseal) only, before restoring a snapshot.
 set -euo pipefail
@@ -126,12 +127,36 @@ EOF
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 approle_secret() { # role, secret name
   kxt "$ROOT" "$BIN read -field=role_id auth/approle/role/$1/role-id" > "$tmp/role-id"
-  kxt "$ROOT" "$BIN write -f -field=secret_id auth/approle/role/$1/secret-id" > "$tmp/secret-id"
+  kxt "$ROOT" "$BIN write -f -format=json auth/approle/role/$1/secret-id" > "$tmp/new.json"
+  python3 -c "import json,sys;d=json.load(open(sys.argv[1]))['data'];open(sys.argv[2],'w').write(d['secret_id']);print(d['secret_id_accessor'])" \
+    "$tmp/new.json" "$tmp/secret-id" > "$tmp/accessor"
+  rm -f "$tmp/new.json"
   kubectl -n "$NS" create secret generic "$2" \
     --from-file=role-id="$tmp/role-id" --from-file=secret-id="$tmp/secret-id" \
     --dry-run=client -o yaml | kubectl -n "$NS" apply -f - >/dev/null
+  # A rotation: every older secret-id of this role is destroyed (they never expire,
+  # secret_id_ttl=0), so a copy of an earlier Secret no longer logs in.
+  kxt "$ROOT" "
+    keep=$(cat "$tmp/accessor")
+    for a in \$($BIN list -format=json auth/approle/role/$1/secret-id 2>/dev/null | tr -d '[]\" ' | tr ',' ' '); do
+      [ \"\$a\" = \"\$keep\" ] || $BIN write auth/approle/role/$1/secret-id-accessor/destroy secret_id_accessor=\"\$a\" >/dev/null
+    done"
 }
 approle_secret management-api "$R-vault-approle"
 approle_secret store-backup "$R-store-backup"
-echo "Secrets $R-vault-approle and $R-store-backup written. Restart management-api if it is running:"
-echo "  kubectl -n $NS rollout restart deploy/$R-management-api"
+
+# Roles from earlier versions of this script (full pki/* and secrets/* access, secret-ids
+# that never expire): removed, with their policies, so old copies of their Secrets are dead.
+kxt "$ROOT" "
+  for r in pm4ml-management-api pm4ml-store-backup; do
+    if $BIN read auth/approle/role/\$r >/dev/null 2>&1; then
+      $BIN delete auth/approle/role/\$r >/dev/null; $BIN policy delete \$r >/dev/null 2>&1 || true
+      echo \"removed the legacy AppRole \$r\"
+    fi
+  done"
+
+echo "Secrets $R-vault-approle and $R-store-backup written; older secret-ids destroyed."
+if kubectl -n "$NS" get deploy "$R-management-api" >/dev/null 2>&1; then
+  kubectl -n "$NS" rollout restart deploy/"$R-management-api" >/dev/null
+  echo "Restarted management-api so it logs in with the new secret-id."
+fi

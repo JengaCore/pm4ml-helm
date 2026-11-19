@@ -1,0 +1,20 @@
+# CI: Vault (key shares), single Redis, NodePort callback, core connector from Secrets/volumes.
+dfspId: ci-dfsp
+switch: { domain: switch.example.test, apiType: iso20022, currency: USD, caBundle: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----" }
+callback:
+  host: ml-connect.ci.example.test
+  preflight: { expectIP: 192.0.2.20 }
+  service: { type: NodePort, nodePort: 30443 }
+egress: { whitelistIps: [192.0.2.10, 192.0.2.11] }
+store: { type: vault }
+redis: { mode: single, ha: { enabled: false } }
+coreConnector:
+  image: { repository: registry.example.test/core-connector, tag: "1.0.0" }
+  imagePullSecrets: [ { name: registry } ]
+  backendPath: /api
+  extraPorts: [ { name: cbs, port: 3004 } ]
+  env: { CBS_URL: https://cbs.example.test }
+  envFromSecrets: { CBS_KEY: { secret: cbs, key: key } }
+  extraVolumes: [ { name: ca, secret: { secretName: cbs-ca } } ]
+  extraVolumeMounts: [ { name: ca, mountPath: /etc/cbs } ]
+  readinessProbe: { httpGet: { path: /health, port: 3003 } }
