@@ -21,6 +21,14 @@ app.kubernetes.io/instance: {{ .ctx.Release.Name }}
 {{- $_ := required "switch.domain is required" .Values.switch.domain -}}
 {{- $_ := required "switch.currency is required" .Values.switch.currency -}}
 {{- $_ := required "callback.host is required" .Values.callback.host -}}
+{{- /* 0.1.x keys: refused rather than silently ignored (an old values file would
+otherwise render a single Valkey node where it asked for HA). */ -}}
+{{- if or (hasKey .Values.redis "mode") (hasKey .Values.redis "ha") (hasKey .Values.redis "single") (hasKey .Values "redis-ha") -}}
+{{- fail "redis.mode / redis.ha / redis.single / redis-ha are 0.1.x settings: Redis is now the valkey subchart. For HA add -f presets/valkey-ha.yaml; for a managed Redis, presets/redis-external.yaml (README: Upstream charts and presets)" -}}
+{{- end -}}
+{{- if or (hasKey .Values.store "type") (hasKey .Values.store "persistence") (hasKey .Values.store "image") (hasKey .Values.store "sealSecret") -}}
+{{- fail "store.type / store.persistence / store.image / store.sealSecret are 0.1.x settings: the store is now the openbao or vault subchart (openbao.server.*, vault.server.*, presets/store-vault.yaml)" -}}
+{{- end -}}
 {{- if eq (len (compact (list .Values.openbao.enabled .Values.vault.enabled))) 0 -}}{{ fail "enable one secret store: openbao.enabled or vault.enabled" }}{{- end -}}
 {{- if and .Values.openbao.enabled .Values.vault.enabled -}}{{ fail "enable one secret store only: openbao.enabled or vault.enabled" }}{{- end -}}
 {{- if and (not .Values.valkey.enabled) (not .Values.redis.external.urlSecret) -}}{{ fail "valkey.enabled is false: set redis.external.urlSecret (a managed Redis), or keep valkey.enabled" }}{{- end -}}
