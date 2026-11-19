@@ -223,9 +223,11 @@ on, read-only root file systems, core connector swapped by values
 | `helm upgrade` that recreates the store pod (the case that lost `pm4mlhelm03` without a volume) | same CA, unsealed by itself, 5/5 after |
 | Server certificate renewal (earlier run, shortened TTL) | renewed itself, payments flowing during the renewals |
 
-Not covered: the bootstrap and restore Jobs' Roles on this cluster (its service account
-cannot create Roles: the same scripts ran with the operator's rights; the Role path is
-covered by CI on kind), client certificate renewal (needs the hub to sign: see
+Not covered on this cluster: the bootstrap and restore Jobs' Roles (its service account
+cannot create Roles: the same scripts ran with the operator's rights). Both Role paths run
+in CI on kind, for OpenBao and Vault: bootstrap, then backup to an S3 API, the store's
+volume deleted, the restore Job (which restarts the store pod and management-api itself),
+the same CA. Also not covered: client certificate renewal (needs the hub to sign: see
 [Certificates and renewal](#certificates-and-renewal)), node drain (no node rights),
 EKS/AKS, a managed Redis over TLS.
 

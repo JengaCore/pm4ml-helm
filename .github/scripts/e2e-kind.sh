@@ -128,4 +128,43 @@ else
 fi
 [ "$(ca_fp)" = "$FP1" ] || fail "DFSP CA lost across a store restart"
 
+step "backup to S3, lose the store's volume, restore Job (with its Role)"
+# A throwaway S3 API in the namespace.
+k create deployment s3 --image=adobe/s3mock:3.12.0 --port=9090 >/dev/null
+k set env deployment/s3 initialBuckets=backups >/dev/null
+k expose deployment s3 --port=9090 >/dev/null
+k create secret generic "$R-backup-s3" --from-literal=AWS_ACCESS_KEY_ID=e2e --from-literal=AWS_SECRET_ACCESS_KEY=e2e \
+  --from-literal=AWS_DEFAULT_REGION=us-east-1 --from-literal=S3_BUCKET=backups --from-literal=S3_ENDPOINT=http://s3:9090 >/dev/null
+k rollout status deploy/s3 --timeout=600s
+BK=(--set backup.enabled=true --set "backup.s3Secret=$R-backup-s3")
+helm upgrade "$R" "$CHART" -n "$NS" -f "$VALUES" "${BK[@]}" --timeout 10m
+k create job backup-now --from=cronjob/"$R-store-backup" >/dev/null
+k wait --for=condition=complete job/backup-now --timeout=600s || fail "backup Job"
+k logs job/backup-now --all-containers | tail -2
+unseal_vault() {
+  for i in 0 1 2; do
+    key=$(k get secret "$R-store-init" -o jsonpath='{.data.init\.json}' | base64 -d | jq -r ".keys_base64[$i]")
+    # shellcheck disable=SC2016  # $K expands in the pod's shell
+    k exec -i "$R-vault-0" -- sh -c 'read -r K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K" >/dev/null' <<<"$key"
+  done
+}
+k scale statefulset "$R-vault" --replicas=0 >/dev/null
+k wait --for=delete pod/"$R-vault-0" --timeout=300s
+k delete pvc "data-$R-vault-0" --wait=true --timeout=300s
+k scale statefulset "$R-vault" --replicas=1 >/dev/null
+for _ in $(seq 1 60); do k get pod "$R-vault-0" >/dev/null 2>&1 && break; sleep 2; done
+k wait --for=jsonpath='{.status.containerStatuses[0].started}'=true pod/"$R-vault-0" --timeout=600s || fail "new store pod"
+for _ in $(seq 1 150); do store sys/seal-status >/dev/null 2>&1 && break; sleep 2; done
+[ "$(store sys/init | jq -r .initialized)" = false ] || fail "the new volume should be empty"
+helm upgrade "$R" "$CHART" -n "$NS" -f "$VALUES" "${BK[@]}" --set restore.enabled=true --timeout 10m
+REV=$(helm -n "$NS" history "$R" -o json | jq -r '.[-1].revision')
+k get job "$R-bootstrap-$REV" >/dev/null 2>&1 && fail "bootstrap must not run during a restore"
+k wait --for=condition=complete "job/$R-store-restore-$REV" --timeout=600s || fail "restore Job"
+k logs "job/$R-store-restore-$REV"
+[ "$KIND" = vault ] && unseal_vault
+for _ in $(seq 1 90); do [ "$(store sys/seal-status | jq -r .sealed)" = false ] && break; sleep 2; done
+[ "$(ca_fp)" = "$FP1" ] || fail "restore did not bring back the same DFSP CA"
+echo "restored: same DFSP CA"
+helm upgrade "$R" "$CHART" -n "$NS" -f "$VALUES" "${BK[@]}" --timeout 10m
+
 step "PASS ($KIND, redis $MODE)"
