@@ -51,6 +51,20 @@ nothing else in the chart changes.
 
 The NOTES printed by `helm install` repeat these steps with your names.
 
+## Certificates and renewal
+
+| Certificate | Signed by | Lifetime (default) | Renewal |
+|---|---|---|---|
+| DFSP CA | itself, in the store | 97 600 h | never replaced by the chart |
+| Server (callbacks) | DFSP CA | the PKI mount's default, 32 days | automatic, 2 days before expiry; no hub action (the hub trusts the CA) |
+| Client (to the switch) | hub CA, in MCM | the hub's choice (90 days on sbx) | management-api sends a new CSR 7 days before expiry; **the hub operator signs it** in MCM |
+| Hub's client certificate | DFSP CA | 5 years | signed by management-api |
+
+Alert on the client certificate's expiry: it is the only renewal that needs a
+person on the hub side. Upstream bug: `POST /dfsp/servercerts` on
+management-api 7.0.0 returns 500 (`ctx.stateMachine` is undefined), so the
+server certificate cannot be renewed on demand; the automatic renewal works.
+
 ## Callback address
 
 The switch calls the DFSP at `https://<callback.host>:443`, with mutual TLS
@@ -130,7 +144,10 @@ wrong one); the Service kept its address through upgrades. The core connector wa
 (`mojaloop/mojaloop-simulator:v15.5.4`, port 3000, rules file from a ConfigMap).
 Enrolment through MCM to `DFSP_CLIENT_CERT_CONFIGURED`; payments 20/20 in each
 of: pm4mlhelm03 → another PM4ML DFSP, the reverse, and a third DFSP →
-pm4mlhelm03. Not exercised on that cluster: the bootstrap Job's Role (the test
+pm4mlhelm03; ledger positions read from the hub after each run matched the
+payments. The OpenBao container restarted and unsealed itself. The server
+certificate renewed itself before expiry (shortened TTL), with payments flowing
+during the renewals. Not exercised on that cluster: the bootstrap Job's Role (the test
 service account cannot create Roles; the same script ran with the operator's
 rights, `bootstrap.rbac: false`).
 
