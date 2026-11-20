@@ -1,12 +1,12 @@
 apiVersion: v2
 name: pm4ml-dfsp
 description: >-
-  Payment Manager for Mojaloop (PM4ML) for a DFSP joining a jengacore switch:
+  Payment Manager for Mojaloop (PM4ML) for a DFSP joining a Mojaloop switch:
   the SDK scheme adapter, management-api (MCM enrolment), the DFSP's own core
   connector, a secret store (OpenBao or Vault), Redis, backups and the mutual-TLS
   callback edge, configured from one values file.
 type: application
-version: 0.2.1
+version: 0.2.2
 appVersion: "v24.19.3"
 keywords: [mojaloop, pm4ml, dfsp, payments]
 home: https://github.com/JengaCore/pm4ml-helm

@@ -1,7 +1,7 @@
 # pm4ml-helm
 
 Helm chart for Payment Manager for Mojaloop (PM4ML), for a DFSP connecting to a
-JengaCore switch. It is the Kubernetes counterpart of
+Mojaloop switch. It is the Kubernetes counterpart of
 [pm4ml-docker-compose](https://github.com/JengaCore/pm4ml-docker-compose) and has
 the same defaults.
 
