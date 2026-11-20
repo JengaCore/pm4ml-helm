@@ -1,7 +1,7 @@
 {{- if .Values.restore.enabled -}}
 {{- $f := include "dfsp.fullname" . -}}
 {{- $n := printf "%s-store-restore" $f -}}
-{{- $bao := eq .Values.store.type "openbao" -}}
+{{- $bao := .Values.openbao.enabled -}}
 # Restore after losing the store's volume: brings back the same DFSP CA, keys and
 # enrolment from a snapshot that the backup CronJob uploaded, so the DFSP does not
 # onboard again. Only into an EMPTY store: it refuses an initialised one.
@@ -71,7 +71,7 @@ spec:
           env:
             - { name: HOME, value: /work }
             - { name: A, value: {{ include "dfsp.storeAddr" . | quote }} }
-            - { name: KIND, value: {{ .Values.store.type | quote }} }
+            - { name: KIND, value: {{ include "dfsp.storeKind" . | quote }} }
             - { name: PREFIX, value: {{ .Values.backup.prefix | default (printf "%s-store/" $f) | quote }} }
             - { name: SNAPSHOT_KEY, value: {{ .Values.restore.snapshotKey | quote }} }
             - { name: STORE_POD, value: "{{ include "dfsp.storeName" . }}-0" }

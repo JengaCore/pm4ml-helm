@@ -198,76 +198,127 @@ coreConnector:
   externalBackendEndpoint: ""
 
 store:
-  # -- openbao (unseals itself with a static key) or vault (Shamir key shares, as Compose).
-  type: openbao
-  image:
-    openbao: openbao/openbao:2.6.5
-    vault: hashicorp/vault:1.13.3
-  persistence:
-    # -- Production: true. The store holds the DFSP CA and private keys.
-    enabled: true
-    size: 1Gi
-    storageClass: ""
-    # -- Required to run with persistence off: the store (and the DFSP's identity) is then
-    # lost whenever its pod is recreated, including by a helm upgrade that changes it.
-    acceptDataLoss: false
-  # -- OpenBao: Secret with the 32-byte static seal key (key unseal.key). Created by
-  # the bootstrap Job if missing (back it up!). Default: <release>-openbao-seal.
-  sealSecret: ""
-  resources:
-    requests: { cpu: 50m, memory: 128Mi }
-    limits: { memory: 256Mi }
+  # -- Refuse to render a store without a volume unless set: the store (the DFSP's CA,
+  # keys and enrolment) would be lost whenever its pod is recreated, a helm upgrade
+  # included. Throwaway tests only.
+  acceptDataLoss: false
+
+# The secret store is an upstream chart. Exactly one of openbao.enabled / vault.enabled.
+# OpenBao (default) unseals itself with a static key; Vault uses key shares, as Compose
+# (presets/store-vault.yaml). Everything below is the upstream chart's own values: see
+# https://github.com/openbao/openbao-helm and https://github.com/hashicorp/vault-helm.
+# -- OpenBao subchart (openbao/openbao 0.30.7).
+openbao:
+  enabled: true
+  injector: { enabled: false }
+  csi: { enabled: false }
+  ui: { enabled: false }
+  server:
+    # Kubernetes auth is not used: no cluster-wide role binding.
+    authDelegator: { enabled: false }
+    image: { registry: quay.io, repository: openbao/openbao, tag: "2.6.5" }
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { memory: 256Mi }
+    dataStorage:
+      # -- The store's volume. Production: true (see store.acceptDataLoss).
+      enabled: true
+      size: 1Gi
+      storageClass: null
+    auditStorage: { enabled: false }
+    # The static seal key, created by the bootstrap Job (BACK IT UP, away from the
+    # snapshots). A subchart value cannot use the release name: keep pm4ml-openbao-seal
+    # for a release named pm4ml, otherwise set <release>-openbao-seal (the chart refuses
+    # to render a shared default for another release).
+    volumes:
+      - name: seal
+        secret: { secretName: pm4ml-openbao-seal, defaultMode: 0440 }
+    volumeMounts:
+      - { name: seal, mountPath: /openbao/seal, readOnly: true }
+    standalone:
+      enabled: true
+      config: |
+        ui = false
+        disable_mlock = true
+        storage "raft" {
+          path    = "/openbao/data"
+          node_id = "{{ .Release.Name }}-openbao-0"
+        }
+        cluster_addr = "http://127.0.0.1:8201"
+        api_addr     = "http://{{ .Release.Name }}-openbao:8200"
+        listener "tcp" {
+          address     = "[::]:8200"
+          tls_disable = 1
+          max_request_json_strings = 100000
+        }
+        seal "static" {
+          current_key_id = "{{ .Release.Name }}-1"
+          current_key    = "file:///openbao/seal/unseal.key"
+        }
+
+# -- Vault subchart (hashicorp/vault 0.34.1, image pinned to 1.13.3, the last MPL release).
+vault:
+  enabled: false
+  injector: { enabled: false }
+  csi: { enabled: false }
+  ui: { enabled: false }
+  server:
+    authDelegator: { enabled: false }
+    image: { repository: hashicorp/vault, tag: "1.13.3" }
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { memory: 256Mi }
+    dataStorage: { enabled: true, size: 1Gi, storageClass: null }
+    auditStorage: { enabled: false }
+    standalone:
+      enabled: true
+      config: |
+        ui = false
+        disable_mlock = true
+        storage "raft" {
+          path    = "/vault/data"
+          node_id = "{{ .Release.Name }}-vault-0"
+        }
+        cluster_addr = "http://127.0.0.1:8201"
+        api_addr     = "http://{{ .Release.Name }}-vault:8200"
+        listener "tcp" {
+          address     = "[::]:8200"
+          tls_disable = 1
+        }
 
 redis:
-  # -- ha: the redisHa subchart (Sentinel + HAProxy, password). single: one Redis (tests).
-  # external: a managed Redis whose URL is in redis.external.urlSecret.
-  mode: ha
-  ha:
-    # -- Must be true when mode is ha (it enables the subchart).
-    enabled: true
-  single:
-    image: redis:7.2.5-alpine
-    persistence: { enabled: true, size: 2Gi, storageClass: "" }
   external:
-    # -- Secret and key holding redis:// or rediss:// URL (with its password).
+    # -- With valkey.enabled false: Secret and key holding the redis:// or rediss:// URL
+    # (with its password) of a managed Redis (ElastiCache, Azure Cache, Memorystore).
     urlSecret: ""
     urlKey: url
 
-# -- redis-ha subchart values (dandydeveloper/redis-ha 4.35.5), used when redis.mode is ha.
-redis-ha:
-  # -- Secret with the Redis password (key auth); the bootstrap Job creates it with a random
-  # password if missing. Must be <release>-redis-auth for any release not named pm4ml (the
-  # chart refuses to render otherwise: a subchart value cannot use the release name).
-  existingSecret: pm4ml-redis-auth
-  authKey: auth
-  auth: true
-  replicas: 3
-  hardAntiAffinity: true
-  persistentVolume: { enabled: true, size: 2Gi }
-  image: { repository: public.ecr.aws/docker/library/redis, tag: 8.2.2-alpine }
-  redis:
-    config: { appendonly: "yes", appendfsync: everysec }
-    resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
-  haproxy:
+# Redis-compatible store for the SDK's state: the upstream Valkey chart (valkey/valkey
+# 1.0.0, BSD). Single node by default; for HA set replica, sentinel and haproxy together
+# (presets/valkey-ha.yaml). Upstream values: https://github.com/valkey-io/valkey-helm
+# -- Valkey subchart. enabled: false to use redis.external instead.
+valkey:
+  enabled: true
+  auth:
     enabled: true
-    replicas: 2
-    hardAntiAffinity: true
-    image: { repository: public.ecr.aws/docker/library/haproxy, tag: 3.0.8-alpine }
-    # -- Only this chart's pods (label app.kubernetes.io/part-of: pm4ml-dfsp) reach HAProxy.
-    # Releases sharing a namespace: select app.kubernetes.io/instance: <release> instead, here
-    # and in redis-ha.networkPolicy below.
-    networkPolicy:
-      enabled: true
-      ingressRules:
-        - selectors:
-            - podSelector: { matchLabels: { app.kubernetes.io/part-of: pm4ml-dfsp } }
-          ports: [ { port: 6379, protocol: TCP } ]
-  networkPolicy:
-    enabled: true
-    ingressRules:
-      - selectors:
-          - podSelector: { matchLabels: { app.kubernetes.io/part-of: pm4ml-dfsp } }
-        ports: [ { port: 6379, protocol: TCP } ]
+    # Created by the bootstrap Job: key "default" (the clients' password) and key
+    # "sentinel". Templated by the subchart, so it follows the release name.
+    usersExistingSecret: "{{ .Release.Name }}-redis-auth"
+    aclUsers:
+      default: { permissions: "~* &* +@all" }
+  persistence: { enabled: true, size: 2Gi }
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  # Only pods labelled <release>-valkey-client=true (this chart's SDK, management-api
+  # and core connector) reach Valkey.
+  networkPolicy: { enabled: true, allowExternal: false }
+  replica: { enabled: false }
+  sentinel:
+    enabled: false
+    existingSecret: "{{ .Release.Name }}-redis-auth"
+    passwordKey: sentinel
+  haproxy: { enabled: false }
 
 bootstrap:
   # -- Job (one per Helm revision): initialises and configures the store, creates the DFSP CA

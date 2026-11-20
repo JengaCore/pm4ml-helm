@@ -30,7 +30,7 @@ spec:
               emptyDir: {}
           initContainers:
             - name: snapshot
-              image: {{ ternary .Values.store.image.openbao .Values.store.image.vault (eq .Values.store.type "openbao") }}
+              image: {{ include "dfsp.storeImage" . }}
               env:
                 - { name: BAO_ADDR, value: {{ include "dfsp.storeAddr" . | quote }} }
                 - { name: VAULT_ADDR, value: {{ include "dfsp.storeAddr" . | quote }} }

@@ -56,9 +56,9 @@ data:
   bootstrap.sh: |
     #!/bin/sh
     set -eu
-    R="{{ $f }}"; A="{{ include "dfsp.storeAddr" . }}"; KIND="{{ .Values.store.type }}"
+    R="{{ $f }}"; A="{{ include "dfsp.storeAddr" . }}"; KIND="{{ include "dfsp.storeKind" . }}"
     CA_CN="{{ .Values.dfspId }} CA"; CA_O="{{ .Values.mcm.subject.organization | default .Values.dfspId }}"
-    REDIS_MODE="{{ .Values.redis.mode }}"; REDIS_AUTH="{{ include "dfsp.redisAuthSecret" . }}"
+    REDIS_MODE="{{ ternary "valkey" "external" .Values.valkey.enabled }}"; REDIS_AUTH="{{ include "dfsp.redisAuthSecret" . }}"
     SEAL="{{ include "dfsp.sealSecret" . }}"; REDIS_HOST="{{ include "dfsp.redisHost" . }}"
     EXT_SECRET="{{ .Values.redis.external.urlSecret }}"; EXT_KEY="{{ .Values.redis.external.urlKey }}"
     say() { echo "[bootstrap] $*"; }
@@ -80,10 +80,16 @@ data:
     fi
     ilp="$(sget "$R-runtime" ilp-secret)"; [ -n "$ilp" ] || ilp="$(rnd 64)"; printf '%s' "$ilp" > "$T/ilp"
     case "$REDIS_MODE" in
-      ha) pw="$(sget "$REDIS_AUTH" auth)"
-          if [ -z "$pw" ]; then rnd 48 > "$T/pw"; sput "$REDIS_AUTH" "auth=$T/pw"; pw="$(cat "$T/pw")"; say "created Secret $REDIS_AUTH"; fi
+      valkey)
+          # Key "default": the clients' password (Valkey's default user). Key "sentinel":
+          # Sentinel's own endpoint (HA). Both kept across runs.
+          pw="$(sget "$REDIS_AUTH" default)"; sp="$(sget "$REDIS_AUTH" sentinel)"
+          if [ -z "$pw" ] || [ -z "$sp" ]; then
+            [ -n "$pw" ] || pw="$(rnd 48)"; [ -n "$sp" ] || sp="$(rnd 48)"
+            printf '%s' "$pw" > "$T/pw"; printf '%s' "$sp" > "$T/sp"
+            sput "$REDIS_AUTH" "default=$T/pw" "sentinel=$T/sp"; say "wrote Secret $REDIS_AUTH"
+          fi
           printf 'redis://:%s@%s:6379' "$pw" "$REDIS_HOST" > "$T/url" ;;
-      single) printf 'redis://%s:6379' "$REDIS_HOST" > "$T/url" ;;
       external) sget "$EXT_SECRET" "$EXT_KEY" > "$T/url"; [ -s "$T/url" ] || { say "Secret $EXT_SECRET/$EXT_KEY is empty"; exit 1; } ;;
     esac
     sput "$R-runtime" "ilp-secret=$T/ilp" "cache-url=$T/url"

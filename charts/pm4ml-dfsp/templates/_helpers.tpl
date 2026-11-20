@@ -21,17 +21,30 @@ app.kubernetes.io/instance: {{ .ctx.Release.Name }}
 {{- $_ := required "switch.domain is required" .Values.switch.domain -}}
 {{- $_ := required "switch.currency is required" .Values.switch.currency -}}
 {{- $_ := required "callback.host is required" .Values.callback.host -}}
-{{- if not (has .Values.redis.mode (list "ha" "single" "external")) -}}{{ fail "redis.mode must be ha, single or external" }}{{- end -}}
-{{- if and (eq .Values.redis.mode "ha") (not .Values.redis.ha.enabled) -}}{{ fail "redis.mode is ha: set redis.ha.enabled: true (it enables the redis-ha subchart)" }}{{- end -}}
-{{- if and (ne .Values.redis.mode "ha") .Values.redis.ha.enabled -}}{{ fail "redis.mode is not ha: set redis.ha.enabled: false, or the redis-ha subchart is installed for nothing" }}{{- end -}}
-{{- if and (eq .Values.redis.mode "ha") (ne .Release.Name "pm4ml") (eq (index .Values "redis-ha" "existingSecret") "pm4ml-redis-auth") -}}
-{{- fail (printf "redis-ha.existingSecret: set it to %s-redis-auth (the default pm4ml-redis-auth is for a release named pm4ml; releases sharing a namespace must not share a Redis password)" .Release.Name) -}}
+{{- /* 0.1.x keys: refused rather than silently ignored (an old values file would
+otherwise render a single Valkey node where it asked for HA). */ -}}
+{{- if or (hasKey .Values.redis "mode") (hasKey .Values.redis "ha") (hasKey .Values.redis "single") (hasKey .Values "redis-ha") -}}
+{{- fail "redis.mode / redis.ha / redis.single / redis-ha are 0.1.x settings: Redis is now the valkey subchart. For HA add -f presets/valkey-ha.yaml; for a managed Redis, presets/redis-external.yaml (README: Upstream charts and presets)" -}}
+{{- end -}}
+{{- if or (hasKey .Values.store "type") (hasKey .Values.store "persistence") (hasKey .Values.store "image") (hasKey .Values.store "sealSecret") -}}
+{{- fail "store.type / store.persistence / store.image / store.sealSecret are 0.1.x settings: the store is now the openbao or vault subchart (openbao.server.*, vault.server.*, presets/store-vault.yaml)" -}}
+{{- end -}}
+{{- if eq (len (compact (list .Values.openbao.enabled .Values.vault.enabled))) 0 -}}{{ fail "enable one secret store: openbao.enabled or vault.enabled" }}{{- end -}}
+{{- if and .Values.openbao.enabled .Values.vault.enabled -}}{{ fail "enable one secret store only: openbao.enabled or vault.enabled" }}{{- end -}}
+{{- if and (not .Values.valkey.enabled) (not .Values.redis.external.urlSecret) -}}{{ fail "valkey.enabled is false: set redis.external.urlSecret (a managed Redis), or keep valkey.enabled" }}{{- end -}}
+{{- if .Values.valkey.enabled -}}
+{{- $v := .Values.valkey -}}
+{{- if and $v.replica.enabled (not (and $v.sentinel.enabled $v.haproxy.enabled)) -}}{{ fail "valkey.replica.enabled needs valkey.sentinel.enabled and valkey.haproxy.enabled too (presets/valkey-ha.yaml): without them clients may write to a replica" }}{{- end -}}
+{{- if and (not $v.replica.enabled) (or $v.sentinel.enabled $v.haproxy.enabled) -}}{{ fail "valkey.sentinel/haproxy need valkey.replica.enabled (presets/valkey-ha.yaml)" }}{{- end -}}
+{{- end -}}
+{{- if and .Values.openbao.enabled (ne .Release.Name "pm4ml") (eq (include "dfsp.sealSecret" .) "pm4ml-openbao-seal") -}}
+{{- fail (printf "openbao.server.volumes: set the seal Secret to %s-openbao-seal (pm4ml-openbao-seal is the default for a release named pm4ml; releases must not share a seal key)" .Release.Name) -}}
 {{- end -}}
 {{- if and .Values.networkPolicies.enabled (not .Values.coreConnector.enabled) (not .Values.networkPolicies.sdkOutboundFrom) -}}
 {{- fail "coreConnector.enabled is false and networkPolicies are on: list the external core connector's pods in networkPolicies.sdkOutboundFrom, or no payment request reaches the SDK (port 4001)" -}}
 {{- end -}}
-{{- if and (not .Values.store.persistence.enabled) (not .Values.store.persistence.acceptDataLoss) -}}
-{{- fail "store.persistence.enabled is false: the store (DFSP CA, keys, enrolment) would be lost whenever its pod is recreated, including by a helm upgrade. Set store.persistence.acceptDataLoss: true only for throwaway tests" -}}
+{{- if and (not (index .Values (include "dfsp.storeKind" .) "server" "dataStorage" "enabled")) (not .Values.store.acceptDataLoss) -}}
+{{- fail "the secret store has no volume (openbao/vault .server.dataStorage.enabled false): the DFSP CA, keys and enrolment would be lost whenever its pod is recreated, including by a helm upgrade. Set store.acceptDataLoss: true only for throwaway tests" -}}
 {{- end -}}
 {{- end -}}
 
@@ -40,19 +53,38 @@ app.kubernetes.io/instance: {{ .ctx.Release.Name }}
 {{- define "dfsp.keycloakUrl" -}}{{ .Values.switch.keycloakUrl | default (printf "https://keycloak.%s" .Values.switch.domain) }}{{- end -}}
 
 {{- define "dfsp.mcmSecret" -}}{{ .Values.mcm.clientSecret.existingSecret | default (printf "%s-mcm" (include "dfsp.fullname" .)) }}{{- end -}}
-{{- define "dfsp.storeName" -}}{{ include "dfsp.fullname" . }}-vault{{- end -}}
-{{- define "dfsp.storeAddr" -}}http://{{ include "dfsp.storeName" . }}:8200{{- end -}}
-{{- define "dfsp.sealSecret" -}}{{ .Values.store.sealSecret | default (printf "%s-openbao-seal" (include "dfsp.fullname" .)) }}{{- end -}}
-{{- define "dfsp.redisAuthSecret" -}}
-{{- if eq .Values.redis.mode "ha" -}}{{ required "redis-ha.existingSecret is required with redis.mode ha" (index .Values "redis-ha" "existingSecret") }}
-{{- else -}}{{ include "dfsp.fullname" . }}-redis-auth{{- end -}}
+{{/* Name of a subchart's resources, as the upstream charts compute it (release name,
+or <release>-<chart> unless the release name already contains the chart name). */}}
+{{- define "dfsp.subFullname" -}}
+{{- $ctx := index . 0 -}}{{- $chart := index . 1 -}}
+{{- $o := index $ctx.Values $chart "fullnameOverride" | default "" -}}
+{{- if $o -}}{{ $o | trunc 63 | trimSuffix "-" }}
+{{- else if contains $chart $ctx.Release.Name -}}{{ $ctx.Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else -}}{{ printf "%s-%s" $ctx.Release.Name $chart | trunc 63 | trimSuffix "-" }}{{- end -}}
 {{- end -}}
 
-{{/* Redis host of this release. The redis-ha subchart names its Services from the
-release name, not from fullnameOverride. */}}
+{{- define "dfsp.storeKind" -}}{{ ternary "openbao" "vault" (.Values.openbao.enabled | default false) }}{{- end -}}
+{{- define "dfsp.storeName" -}}{{ include "dfsp.subFullname" (list . (include "dfsp.storeKind" .)) }}{{- end -}}
+{{- define "dfsp.storeAddr" -}}http://{{ include "dfsp.storeName" . }}:8200{{- end -}}
+{{- define "dfsp.storeImage" -}}
+{{- $i := index .Values (include "dfsp.storeKind" .) "server" "image" -}}
+{{- if $i.registry }}{{ $i.registry }}/{{ end }}{{ $i.repository }}:{{ $i.tag }}
+{{- end -}}
+{{/* The OpenBao seal Secret: the "seal" volume of the openbao subchart. */}}
+{{- define "dfsp.sealSecret" -}}
+{{- range .Values.openbao.server.volumes -}}{{- if eq .name "seal" -}}{{ .secret.secretName }}{{- end -}}{{- end -}}
+{{- end -}}
+{{- define "dfsp.redisAuthSecret" -}}{{ .Release.Name }}-redis-auth{{- end -}}
+{{/* Where clients reach Valkey: HAProxy (always the master) in HA, the service otherwise. */}}
 {{- define "dfsp.redisHost" -}}
-{{- if eq .Values.redis.mode "ha" -}}{{ .Release.Name }}-redis-ha-haproxy
-{{- else -}}{{ include "dfsp.fullname" . }}-redis{{- end -}}
+{{- $v := include "dfsp.subFullname" (list . "valkey") -}}
+{{- if .Values.valkey.haproxy.enabled -}}{{ $v | trunc 54 | trimSuffix "-" }}-haproxy{{- else -}}{{ $v }}{{- end -}}
+{{- end -}}
+{{/* Pods allowed through Valkey's NetworkPolicy (allowExternal: false). */}}
+{{- define "dfsp.valkeyClientLabel" -}}
+{{- if .Values.valkey.enabled }}
+{{ include "dfsp.subFullname" (list . "valkey") }}-client: "true"
+{{- end -}}
 {{- end -}}
 
 {{- define "dfsp.sdkName" -}}{{ include "dfsp.fullname" . }}-sdk{{- end -}}

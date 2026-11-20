@@ -1,0 +1,4 @@
+# Vault instead of OpenBao (as in the Compose stack): Shamir key shares, someone unseals it
+# after every restart (or the store's KMS seal: add a seal stanza to vault.server.standalone.config).
+openbao: { enabled: false }
+vault: { enabled: true }

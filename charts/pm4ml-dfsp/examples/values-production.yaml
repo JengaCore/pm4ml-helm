@@ -29,13 +29,17 @@ coreConnector:
     CBS_API_KEY: { secret: <secret>, key: api-key }
   readinessProbe: { httpGet: { path: /health, port: 3003 } }
 
-store:
-  type: openbao
-  persistence: { enabled: true, size: 1Gi, storageClass: <encrypted class> }
-redis:
-  mode: ha
-redis-ha:
-  existingSecret: <release>-redis-auth   # default pm4ml-redis-auth
+openbao:
+  server:
+    dataStorage: { enabled: true, size: 1Gi, storageClass: <encrypted class> }
+    volumes:   # the seal key Secret, per release (the bootstrap Job creates it)
+      - { name: seal, secret: { secretName: <release>-openbao-seal, defaultMode: 0440 } }
+# Valkey HA (same as presets/valkey-ha.yaml): replication, Sentinel, HAProxy.
+valkey:
+  persistence: { enabled: true, size: 2Gi, storageClass: <encrypted class> }
+  replica: { enabled: true, replicas: 3 }
+  sentinel: { enabled: true, replicas: 3 }
+  haproxy: { enabled: true, replicas: 2 }
 backup:
   enabled: true
   s3Secret: <release>-backup-s3
