@@ -1,9 +1,9 @@
 # pm4ml-dfsp
 
-![Version: 0.2.1](https://img.shields.io/badge/Version-0.2.1-informational?style=flat-square) ![AppVersion: v24.19.3](https://img.shields.io/badge/AppVersion-v24.19.3-informational?style=flat-square)
+![Version: 0.2.2](https://img.shields.io/badge/Version-0.2.2-informational?style=flat-square) ![AppVersion: v24.19.3](https://img.shields.io/badge/AppVersion-v24.19.3-informational?style=flat-square)
 
 Helm chart for a DFSP's Payment Manager (PM4ML) on any Kubernetes, connected to
-a jengacore switch through MCM. It follows
+a Mojaloop switch through MCM. It follows
 [pm4ml-docker-compose](https://github.com/JengaCore/pm4ml-docker-compose): the hub
 operator adds the DFSP in MCM and sends it a Keycloak client id and secret;
 management-api does the rest (CA, CSRs, certificates, peer JWS keys) by REST.
