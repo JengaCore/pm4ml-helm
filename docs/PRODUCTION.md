@@ -212,7 +212,7 @@ flowchart LR
     S3[(S3: store snapshots<br/>SSE-KMS, versioning,<br/>object lock)]
     KMS[(KMS keys)]
   end
-  HUB[jengacore switch] -->|mTLS| NLB --> SDK
+  HUB[Mojaloop switch] -->|mTLS| NLB --> SDK
   SDK -->|mTLS| NAT --> HUB
   MA --> NAT
   SDK --> EC
