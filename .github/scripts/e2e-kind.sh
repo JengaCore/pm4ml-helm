@@ -131,6 +131,9 @@ step "backup to S3, lose the store's volume, restore Job (with its Role)"
 # A throwaway S3 API in the namespace.
 k create deployment s3 --image=adobe/s3mock:3.12.0 --port=9090 >/dev/null
 k set env deployment/s3 initialBuckets=backups >/dev/null
+# The mock takes about 30 s to listen: without a probe the rollout counts as done at once and
+# the backup Job can use up its retries before the S3 API answers.
+k patch deployment s3 -p '{"spec":{"template":{"spec":{"containers":[{"name":"s3mock","readinessProbe":{"tcpSocket":{"port":9090},"periodSeconds":2}}]}}}}' >/dev/null
 k expose deployment s3 --port=9090 >/dev/null
 k create secret generic "$R-backup-s3" --from-literal=AWS_ACCESS_KEY_ID=e2e --from-literal=AWS_SECRET_ACCESS_KEY=e2e \
   --from-literal=AWS_DEFAULT_REGION=us-east-1 --from-literal=S3_BUCKET=backups --from-literal=S3_ENDPOINT=http://s3:9090 >/dev/null
