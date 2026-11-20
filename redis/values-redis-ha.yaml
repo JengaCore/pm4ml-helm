@@ -1,0 +1,70 @@
+# PRODUCTION Redis: dandydeveloper/redis-ha 4.35.5 (3 Redis + Sentinel, 2 HAProxy),
+# with a password and NetworkPolicies on both the Redis and the HAProxy pods.
+# Validated 2026-11-18 on sbx UAT: the master was killed during 60 payments and
+# all 60 completed; AUTH on, unauthenticated clients refused.
+#
+# 1. Password + the DFSP's Redis URL (one command; random password, kept in
+#    Secrets <release>-redis-auth and <release>-runtime):
+#      NS=<ns> RELEASE=<release> REDIS_HA=1 ./scripts/create-mcm-secrets.sh
+# 2. Redis (replace every "pm4ml" below with the release, or use for-release.sh):
+#      ./scripts/for-release.sh <release> redis/values-redis-ha.yaml > /tmp/redis-ha.yaml
+#      helm upgrade --install <release>-redis dandydeveloper/redis-ha --version 4.35.5 \
+#        -n <ns> -f /tmp/redis-ha.yaml
+#
+# 3. In the payment manager's values, point the SDK's wait-for-redis init
+#    container at HAProxy: sdk-scheme-adapter.sdk-scheme-adapter-api-svc.redis.host:
+#    <release>-redis-ha-haproxy (validated with AUTH on: the ping check passes).
+#
+# Turning AUTH on for a redis-ha that already runs without it does not roll:
+# new replicas cannot authenticate to the old master. Restart all Redis pods
+# together, in a maintenance window.
+fullnameOverride: pm4ml-redis-ha
+replicas: 3
+auth: true
+existingSecret: pm4ml-redis-auth   # key "auth", created by create-mcm-secrets.sh REDIS_HA=1
+authKey: auth
+hardAntiAffinity: true             # one Redis per node; needs 3 nodes
+rbac:
+  create: true                     # needs Role/RoleBinding rights; false also works
+image:
+  repository: public.ecr.aws/docker/library/redis
+  tag: 8.2.2-alpine
+persistentVolume:
+  enabled: true                    # in-flight payment state survives a full restart
+  size: 2Gi
+redis:
+  config:
+    appendonly: "yes"
+    appendfsync: everysec
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+# Redis pods: from each other, from HAProxy (the chart adds both) and from this
+# DFSP's pods.
+networkPolicy:
+  enabled: true
+  ingressRules:
+    - selectors:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/instance: pm4ml }
+      ports:
+        - { port: 6379, protocol: TCP }
+haproxy:
+  enabled: true
+  replicas: 2
+  hardAntiAffinity: true
+  image:
+    repository: public.ecr.aws/docker/library/haproxy
+    tag: 3.0.8-alpine
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  # HAProxy is what clients connect to: only this DFSP's pods may.
+  networkPolicy:
+    enabled: true
+    ingressRules:
+      - selectors:
+          - podSelector:
+              matchLabels: { app.kubernetes.io/instance: pm4ml }
+        ports:
+          - { port: 6379, protocol: TCP }

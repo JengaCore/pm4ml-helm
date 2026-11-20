@@ -1,0 +1,16 @@
+# Differences for EKS (on top of values-production.yaml).
+callback:
+  service:
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: external
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+      service.beta.kubernetes.io/aws-load-balancer-eip-allocations: <eipalloc-a>,<eipalloc-b>,<eipalloc-c>
+    externalTrafficPolicy: Local
+store:
+  persistence: { storageClass: gp3-encrypted }
+# Managed Redis instead of redis-ha: ElastiCache, cluster mode disabled, TLS + AUTH.
+redis:
+  mode: external
+  ha: { enabled: false }
+  external: { urlSecret: <release>-elasticache, urlKey: url }   # rediss://:<token>@<primary endpoint>:6379

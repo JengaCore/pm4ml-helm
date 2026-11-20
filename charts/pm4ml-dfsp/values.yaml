@@ -1,0 +1,345 @@
+# Default values for pm4ml-dfsp.
+#
+# A DFSP sets, at minimum:
+#   dfspId, switch.domain, switch.currency, callback.host, egress.whitelistIps,
+#   coreConnector.image (its own core connector), and creates the Secret with
+#   the MCM client secret (mcm.clientSecret.existingSecret).
+# Everything else has production defaults that follow pm4ml-docker-compose.
+# Secrets never go in this file.
+
+# -- The DFSP id, exactly as the hub operator created it in MCM (case-sensitive).
+dfspId: ""
+
+# -- Overrides the chart name used in resource names.
+nameOverride: ""
+# -- Overrides the full name (default: the release name).
+fullnameOverride: ""
+
+switch:
+  # -- The switch's domain: hosts default to fspiop.<domain>, mcm.<domain>, keycloak.<domain>.
+  domain: ""
+  # -- FSPIOP endpoint (lookups, quotes, transfers). Default: fspiop.<domain>.
+  fspiopHost: ""
+  # -- MCM base URL. Default: https://mcm.<domain>/pm4mlapi.
+  mcmUrl: ""
+  # -- Keycloak base URL. Default: https://keycloak.<domain>.
+  keycloakUrl: ""
+  # -- Keycloak realm holding the DFSP clients.
+  realm: dfsps
+  # -- API flavour; must match the switch: fspiop or iso20022.
+  apiType: fspiop
+  # -- ILP version (4 with iso20022; Compose uses 4).
+  ilpVersion: "4"
+  # -- Settlement currency of this DFSP on the switch.
+  currency: ""
+  # -- Private CA (PEM) of the switch's mcm./keycloak. hosts, if they do not use a public CA.
+  caBundle: ""
+
+callback:
+  # -- Public host name the switch calls back (in the server certificate and in MCM).
+  # Only the name is needed at install: the address can come after (see preflight).
+  host: ""
+  preflight:
+    # -- management-api waits (init container) until callback.host resolves before enrolling,
+    # so a DFSP can install first, read the load balancer's address, then create the DNS record.
+    enabled: true
+    # -- Also require this address among the answers (the reserved IP). Empty: any address.
+    expectIP: ""
+    image: busybox:1.36.1
+  service:
+    # -- Publish the SDK's inbound port as a TCP 443 service (TLS passthrough: the SDK terminates mTLS).
+    enabled: true
+    # -- LoadBalancer (cloud, MetalLB, Octavia) or NodePort (behind an F5/HAProxy in TCP mode).
+    type: LoadBalancer
+    port: 443
+    # -- Fixed node port when type is NodePort.
+    nodePort: null
+    # -- Restrict to the switch's egress IPs (CIDRs). Strongly recommended.
+    loadBalancerSourceRanges: []
+    # -- Keep the switch's source IP.
+    externalTrafficPolicy: Local
+    # -- A reserved address (OpenStack floating IP, GKE static IP, Azure static IP). Some
+    # providers want an annotation instead: see the chart README, "Callback address".
+    loadBalancerIP: ""
+    # -- e.g. AWS NLB: service.beta.kubernetes.io/aws-load-balancer-type: external,
+    # aws-load-balancer-nlb-target-type: ip, aws-load-balancer-eip-allocations: eipalloc-...
+    annotations: {}
+    # -- Keep the Service (and so its address) on helm uninstall (helm.sh/resource-policy: keep).
+    keep: true
+  istio:
+    # -- Istio Gateway (PASSTHROUGH) + VirtualService instead of, or as well as, the Service.
+    enabled: false
+    gatewaySelector: { istio: ingressgateway }
+  ingressNginx:
+    # -- ingress-nginx Ingress with ssl-passthrough (the controller needs --enable-ssl-passthrough).
+    enabled: false
+    className: nginx
+
+egress:
+  # -- The DFSP's fixed egress IPs (bare IPv4, no CIDR): MCM gives them to the switch.
+  whitelistIps: []
+
+mcm:
+  clientSecret:
+    # -- Secret holding the Keycloak client secret the hub operator issued. Create it
+    # (kubectl or External Secrets) before installing. Default name: <release>-mcm.
+    existingSecret: ""
+    key: client-secret
+  # -- Subject of the DFSP's CA and certificates.
+  subject:
+    organization: ""
+    organizationalUnit: Payments
+    country: ""
+    locality: ""
+    state: ""
+    email: ""
+
+sdk:
+  image:
+    repository: mojaloop/sdk-scheme-adapter
+    tag: v24.19.3
+    pullPolicy: IfNotPresent
+  # -- 2+ in production: replicas share state through Redis.
+  replicaCount: 2
+  resources:
+    requests: { cpu: 250m, memory: 384Mi }
+    limits: { memory: 768Mi }
+  # -- PodDisruptionBudget for the SDK.
+  pdb:
+    enabled: true
+    minAvailable: 1
+  # -- Seconds the pod keeps serving payments in flight before it stops.
+  preStopSeconds: 35
+  terminationGracePeriodSeconds: 60
+  autoAcceptParty: true
+  autoAcceptQuotes: false
+  autoAcceptParticipantsPut: true
+  jws:
+    sign: true
+    validateInbound: true
+  requestTimeoutSeconds: 30
+  logLevel: info
+  # -- Extra environment variables (name: value), applied last.
+  extraEnv: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+managementApi:
+  image:
+    repository: pm4ml/mojaloop-payment-manager-management-api
+    tag: "7.0.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  privateKeyLength: 4096
+  # -- Extra environment variables (name: value), applied last.
+  extraEnv: {}
+  nodeSelector: {}
+  tolerations: []
+
+coreConnector:
+  # -- Deploy the DFSP's core connector with this chart.
+  enabled: true
+  image:
+    # -- The DFSP's own core connector image.
+    repository: pm4ml/mojaloop-payment-manager-simulator-core-connector
+    tag: "1.4.5"
+    pullPolicy: IfNotPresent
+  # -- Pull secrets for a private registry, e.g. [{ name: my-registry }].
+  imagePullSecrets: []
+  replicaCount: 2
+  # -- Port of the API the SDK calls (its backend API).
+  port: 3003
+  # -- Extra ports to expose on the Service, e.g. the API the core banking system calls.
+  extraPorts: []
+  # -- Path of the backend endpoint, if not at the root.
+  backendPath: ""
+  # -- Environment variables (name: value).
+  env: {}
+  # -- Environment variables from Secrets: NAME: { secret: <name>, key: <key> }.
+  envFromSecrets: {}
+  # -- Whole Secrets/ConfigMaps as environment (envFrom entries).
+  envFrom: []
+  # -- Extra volumes and mounts (configuration files, certificates for the core banking API...).
+  extraVolumes: []
+  extraVolumeMounts: []
+  # -- Inject REDIS_URL (the DFSP's Redis) into the core connector.
+  injectRedisUrl: true
+  resources:
+    requests: { cpu: 100m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  readinessProbe: {}
+  livenessProbe: {}
+  # -- Pod security context. uid 1001 is the user of the Mojaloop/PM4ML images; set your
+  # image's uid (Kubernetes cannot check a non-numeric USER such as app-user).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    seccompProfile: { type: RuntimeDefault }
+  # -- Container security context. The root file system is read-only; /tmp is writable
+  # (an emptyDir). Mount other writable paths with extraVolumes, or relax this.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: [ALL] }
+  # -- Default: spread replicas over nodes (preferred).
+  affinity: {}
+  pdb:
+    enabled: true
+    minAvailable: 1
+  nodeSelector: {}
+  tolerations: []
+  # -- The SDK's backend when coreConnector.enabled is false (host:port).
+  externalBackendEndpoint: ""
+
+store:
+  # -- openbao (unseals itself with a static key) or vault (Shamir key shares, as Compose).
+  type: openbao
+  image:
+    openbao: openbao/openbao:2.6.5
+    vault: hashicorp/vault:1.13.3
+  persistence:
+    # -- Production: true. The store holds the DFSP CA and private keys.
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+    # -- Required to run with persistence off: the store (and the DFSP's identity) is then
+    # lost whenever its pod is recreated, including by a helm upgrade that changes it.
+    acceptDataLoss: false
+  # -- OpenBao: Secret with the 32-byte static seal key (key unseal.key). Created by
+  # the bootstrap Job if missing (back it up!). Default: <release>-openbao-seal.
+  sealSecret: ""
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+redis:
+  # -- ha: the redisHa subchart (Sentinel + HAProxy, password). single: one Redis (tests).
+  # external: a managed Redis whose URL is in redis.external.urlSecret.
+  mode: ha
+  ha:
+    # -- Must be true when mode is ha (it enables the subchart).
+    enabled: true
+  single:
+    image: redis:7.2.5-alpine
+    persistence: { enabled: true, size: 2Gi, storageClass: "" }
+  external:
+    # -- Secret and key holding redis:// or rediss:// URL (with its password).
+    urlSecret: ""
+    urlKey: url
+
+# -- redis-ha subchart values (dandydeveloper/redis-ha 4.35.5), used when redis.mode is ha.
+redis-ha:
+  # -- Secret with the Redis password (key auth); the bootstrap Job creates it with a random
+  # password if missing. Must be <release>-redis-auth for any release not named pm4ml (the
+  # chart refuses to render otherwise: a subchart value cannot use the release name).
+  existingSecret: pm4ml-redis-auth
+  authKey: auth
+  auth: true
+  replicas: 3
+  hardAntiAffinity: true
+  persistentVolume: { enabled: true, size: 2Gi }
+  image: { repository: public.ecr.aws/docker/library/redis, tag: 8.2.2-alpine }
+  redis:
+    config: { appendonly: "yes", appendfsync: everysec }
+    resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
+  haproxy:
+    enabled: true
+    replicas: 2
+    hardAntiAffinity: true
+    image: { repository: public.ecr.aws/docker/library/haproxy, tag: 3.0.8-alpine }
+    # -- Only this chart's pods (label app.kubernetes.io/part-of: pm4ml-dfsp) reach HAProxy.
+    # Releases sharing a namespace: select app.kubernetes.io/instance: <release> instead, here
+    # and in redis-ha.networkPolicy below.
+    networkPolicy:
+      enabled: true
+      ingressRules:
+        - selectors:
+            - podSelector: { matchLabels: { app.kubernetes.io/part-of: pm4ml-dfsp } }
+          ports: [ { port: 6379, protocol: TCP } ]
+  networkPolicy:
+    enabled: true
+    ingressRules:
+      - selectors:
+          - podSelector: { matchLabels: { app.kubernetes.io/part-of: pm4ml-dfsp } }
+        ports: [ { port: 6379, protocol: TCP } ]
+
+bootstrap:
+  # -- Job (one per Helm revision): initialises and configures the store, creates the DFSP CA
+  # (once, never replaced), the AppRoles and the runtime secrets. Idempotent.
+  enabled: true
+  image: alpine/k8s:1.31.4
+  # -- Create the namespaced Role it needs (Secrets only).
+  rbac: true
+  # -- With rbac false: an existing ServiceAccount an administrator bound to an equivalent
+  # Role (create Secrets; get/patch/update on this release's Secrets). Without one, the Job
+  # stops before initialising anything.
+  serviceAccountName: ""
+
+backup:
+  # -- CronJob: snapshot of the store to an S3-compatible bucket.
+  enabled: false
+  schedule: "17 */6 * * *"
+  # -- Secret with AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION,
+  # S3_BUCKET and optional S3_ENDPOINT.
+  s3Secret: ""
+  prefix: ""
+  image: amazon/aws-cli:2.22.0
+
+restore:
+  # -- Job that restores the store from the newest backup snapshot (or restore.snapshotKey)
+  # after its volume was lost. Only into an empty store; the bootstrap Job is skipped while
+  # this is on. Set it back to false afterwards. Uses backup.s3Secret and backup.prefix.
+  enabled: false
+  # -- Object key of the snapshot to restore. Empty: the newest under the backup prefix.
+  snapshotKey: ""
+  # -- Let the Job restart the store pod (OpenBao unseals at start) and management-api.
+  rbac: true
+
+certCheck:
+  # -- CronJob watching the DFSP's client certificate (signed by the hub in MCM): fails,
+  # and posts to alertWebhook, when a renewal waits for the hub's signature or the
+  # certificate expires within warnDays. MCM notifies nobody of a renewal request.
+  enabled: true
+  schedule: "41 */6 * * *"
+  # -- Alert this many days before expiry (management-api requests the renewal at 7).
+  warnDays: 14
+  # -- Image with sh, curl and jq. Default: bootstrap.image.
+  image: ""
+  alertWebhook:
+    # -- Secret holding a Slack-compatible incoming webhook URL (Slack, Mattermost,
+    # Rocket.Chat, Teams workflow). Empty: no message, the failed Job is the signal.
+    existingSecret: ""
+    key: url
+  prometheusRule:
+    # -- PrometheusRule Pm4mlCertificateAttention (Prometheus Operator), firing while
+    # the last check has not succeeded.
+    enabled: false
+    labels: {}
+
+networkPolicies:
+  # -- NetworkPolicies: the store and the single Redis only from this release's pods; the
+  # SDK's outbound API (4001, starts payments) only from the core connector; management-api
+  # only from the SDK; the callback port (4000) from anywhere (the load balancer).
+  enabled: true
+  # -- Extra peers allowed on the SDK's outbound API (4001), e.g. a core connector deployed
+  # elsewhere: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: bank } } }]
+  sdkOutboundFrom: []
+  # -- Peers allowed on the metrics port (4004). Default: any pod (metrics hold no secrets).
+  metricsFrom: []
+  # -- Extra peers allowed on management-api's API (9000), e.g. a payment manager UI.
+  managementApiFrom: []
+
+monitoring:
+  # -- prometheus.io/* annotations on the SDK pods (port 4004).
+  annotations: true
+  podMonitor:
+    # -- Create a PodMonitor (Prometheus Operator).
+    enabled: false
+    interval: 30s
+    labels: {}

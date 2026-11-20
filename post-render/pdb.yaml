@@ -1,0 +1,12 @@
+# Keeps at least one SDK replica up through node drains and cluster upgrades.
+# With replicaCount 1 it would block every drain, so keep replicaCount >= 2.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pm4ml-sdk-scheme-adapter-api-svc
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sdk-scheme-adapter-api-svc
+      app.kubernetes.io/instance: pm4ml

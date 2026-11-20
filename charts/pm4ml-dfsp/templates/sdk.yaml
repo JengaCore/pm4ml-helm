@@ -1,0 +1,165 @@
+{{- include "dfsp.required" . -}}
+{{- $sdk := include "dfsp.sdkName" . -}}
+{{- $fspiop := include "dfsp.fspiopHost" . -}}
+{{- $sel := dict "name" "sdk-scheme-adapter" "ctx" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $sdk }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+    app.kubernetes.io/name: sdk-scheme-adapter
+spec:
+  replicas: {{ .Values.sdk.replicaCount }}
+  selector:
+    matchLabels: {{- include "dfsp.selector" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "dfsp.labels" . | nindent 8 }}
+        app.kubernetes.io/name: sdk-scheme-adapter
+      annotations:
+        {{- if .Values.monitoring.annotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "4004"
+        {{- end }}
+        {{- with .Values.sdk.podAnnotations }}{{ toYaml . | nindent 8 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.sdk.terminationGracePeriodSeconds }}
+      securityContext: { runAsNonRoot: true, runAsUser: 1001, fsGroup: 1001, seccompProfile: { type: RuntimeDefault } }
+      affinity:
+        {{- if .Values.sdk.affinity }}{{ toYaml .Values.sdk.affinity | nindent 8 }}{{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {{- include "dfsp.selector" $sel | nindent 20 }}
+        {{- end }}
+      {{- with .Values.sdk.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.sdk.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: tls
+          secret: { secretName: {{ include "dfsp.fullname" . }}-tls, defaultMode: 0440 }
+        - name: jws-key
+          secret: { secretName: {{ include "dfsp.fullname" . }}-jws, defaultMode: 0440, items: [ { key: jws-signing.key, path: jwsSigningKey.key } ] }
+        - name: jws-peers
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: sdk-scheme-adapter
+          image: "{{ .Values.sdk.image.repository }}:{{ .Values.sdk.image.tag }}"
+          imagePullPolicy: {{ .Values.sdk.image.pullPolicy }}
+          command: ["yarn", "start:api-svc"]
+          ports:
+            - { name: inbound, containerPort: 4000 }
+            - { name: outbound, containerPort: 4001 }
+            - { name: metrics, containerPort: 4004 }
+          readinessProbe:
+            httpGet: { path: /, port: 4001 }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /, port: 4001 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          lifecycle:
+            preStop:
+              exec: { command: ["sh", "-c", "sleep {{ .Values.sdk.preStopSeconds }}"] }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: {{- toYaml .Values.sdk.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tls, mountPath: /secrets/tls, readOnly: true }
+            - { name: jws-key, mountPath: /secrets/jws, readOnly: true }
+            - { name: jws-peers, mountPath: /jwsVerificationKeys }
+            - { name: tmp, mountPath: /tmp }
+          env:
+            - { name: DFSP_ID, value: {{ .Values.dfspId | quote }} }
+            - { name: LOG_LEVEL, value: {{ .Values.sdk.logLevel | quote }} }
+            - { name: LOG_INDENT, value: "0" }
+            - { name: API_TYPE, value: {{ .Values.switch.apiType | quote }} }
+            - { name: ILP_VERSION, value: {{ .Values.switch.ilpVersion | quote }} }
+            - { name: SUPPORTED_CURRENCIES, value: {{ .Values.switch.currency | quote }} }
+            - { name: PM4ML_ENABLED, value: "true" }
+            - { name: MGMT_API_WS_URL, value: {{ include "dfsp.mgmtName" . | quote }} }
+            - { name: MGMT_API_WS_PORT, value: "4005" }
+            - { name: MANAGEMENT_API_POLL_INTERVAL_MS, value: "30000" }
+            - { name: PEER_ENDPOINT, value: {{ $fspiop | quote }} }
+            - { name: ALS_ENDPOINT, value: {{ $fspiop | quote }} }
+            - { name: QUOTES_ENDPOINT, value: {{ $fspiop | quote }} }
+            - { name: TRANSFERS_ENDPOINT, value: {{ $fspiop | quote }} }
+            - { name: FX_QUOTES_ENDPOINT, value: {{ $fspiop | quote }} }
+            - { name: FX_TRANSFERS_ENDPOINT, value: {{ $fspiop | quote }} }
+            - { name: BACKEND_ENDPOINT, value: {{ include "dfsp.backend" . | quote }} }
+            - { name: OAUTH_CLIENT_KEY, value: {{ .Values.dfspId | quote }} }
+            - { name: OAUTH_TOKEN_ENDPOINT, value: "{{ include "dfsp.keycloakUrl" . }}/realms/{{ .Values.switch.realm }}/protocol/openid-connect/token" }
+            - name: OAUTH_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "dfsp.mcmSecret" . }}, key: {{ .Values.mcm.clientSecret.key }}, optional: true } }
+            - { name: OAUTH_REFRESH_SECONDS, value: "250" }
+            - { name: WSO2_AUTH_FAILURE_REQUEST_RETRIES, value: "2" }
+            - { name: ENABLE_OAUTH_TOKEN_ENDPOINT, value: "false" }
+            - { name: INBOUND_LISTEN_PORT, value: "4000" }
+            - { name: OUTBOUND_LISTEN_PORT, value: "4001" }
+            - { name: TEST_LISTEN_PORT, value: "4002" }
+            - { name: METRICS_SERVER_LISTEN_PORT, value: "4004" }
+            - { name: INBOUND_MUTUAL_TLS_ENABLED, value: "true" }
+            - { name: OUTBOUND_MUTUAL_TLS_ENABLED, value: "true" }
+            - { name: IN_CA_CERT_PATH, value: /secrets/tls/in-ca.pem }
+            - { name: IN_SERVER_CERT_PATH, value: /secrets/tls/server.pem }
+            - { name: IN_SERVER_KEY_PATH, value: /secrets/tls/server.key }
+            - { name: OUT_CA_CERT_PATH, value: /secrets/tls/hub-ca.pem }
+            - { name: OUT_CLIENT_CERT_PATH, value: /secrets/tls/client.pem }
+            - { name: OUT_CLIENT_KEY_PATH, value: /secrets/tls/client.key }
+            - { name: JWS_SIGN, value: {{ .Values.sdk.jws.sign | quote }} }
+            - { name: VALIDATE_INBOUND_JWS, value: {{ .Values.sdk.jws.validateInbound | quote }} }
+            - { name: JWS_SIGNING_KEY_PATH, value: /secrets/jws/jwsSigningKey.key }
+            - { name: JWS_VERIFICATION_KEYS_DIRECTORY, value: /jwsVerificationKeys }
+            - { name: AUTO_ACCEPT_PARTY, value: {{ .Values.sdk.autoAcceptParty | quote }} }
+            - { name: AUTO_ACCEPT_QUOTES, value: {{ .Values.sdk.autoAcceptQuotes | quote }} }
+            - { name: AUTO_ACCEPT_PARTICIPANTS_PUT, value: {{ .Values.sdk.autoAcceptParticipantsPut | quote }} }
+            - { name: RESERVE_NOTIFICATION, value: "true" }
+            - { name: REQUEST_PROCESSING_TIMEOUT_SECONDS, value: {{ .Values.sdk.requestTimeoutSeconds | quote }} }
+            - { name: DEFAULT_REQUEST_TIMEOUT, value: "60000" }
+            - { name: ENABLE_TEST_FEATURES, value: "true" }
+            - { name: ENABLE_BACKEND_EVENT_HANDLER, value: "false" }
+            - { name: ENABLE_FSPIOP_EVENT_HANDLER, value: "false" }
+            - { name: RESOURCE_VERSIONS, value: "transfers=2.0,quotes=2.0,participants=2.0,parties=2.0,transactionRequests=1.1" }
+            - { name: FSPIOP_API_SERVER_MAX_REQUEST_BYTES, value: "209715200" }
+            - { name: BACKEND_API_SERVER_MAX_REQUEST_BYTES, value: "209715200" }
+            - name: ILP_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "dfsp.fullname" . }}-runtime, key: ilp-secret } }
+            - name: CACHE_URL
+              valueFrom: { secretKeyRef: { name: {{ include "dfsp.fullname" . }}-runtime, key: cache-url } }
+            {{- range $k, $v := .Values.sdk.extraEnv }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $sdk }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "dfsp.selector" $sel | nindent 4 }}
+  ports:
+    - { name: inbound, port: 4000, targetPort: 4000 }
+    - { name: outbound, port: 4001, targetPort: 4001 }
+    - { name: metrics, port: 4004, targetPort: 4004 }
+{{- if .Values.sdk.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $sdk }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.sdk.pdb.minAvailable }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels: {{- include "dfsp.selector" $sel | nindent 6 }}
+{{- end }}
