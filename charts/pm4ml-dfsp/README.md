@@ -1,6 +1,6 @@
 # pm4ml-dfsp
 
-![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-informational?style=flat-square) ![AppVersion: v24.19.3](https://img.shields.io/badge/AppVersion-v24.19.3-informational?style=flat-square)
+![Version: 0.2.1](https://img.shields.io/badge/Version-0.2.1-informational?style=flat-square) ![AppVersion: v24.19.3](https://img.shields.io/badge/AppVersion-v24.19.3-informational?style=flat-square)
 
 Helm chart for a DFSP's Payment Manager (PM4ML) on any Kubernetes, connected to
 a jengacore switch through MCM. It follows

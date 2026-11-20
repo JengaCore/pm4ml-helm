@@ -6,7 +6,7 @@ description: >-
   connector, a secret store (OpenBao or Vault), Redis, backups and the mutual-TLS
   callback edge, configured from one values file.
 type: application
-version: 0.2.0
+version: 0.2.1
 appVersion: "v24.19.3"
 keywords: [mojaloop, pm4ml, dfsp, payments]
 home: https://github.com/JengaCore/pm4ml-helm
