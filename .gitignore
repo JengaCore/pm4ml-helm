@@ -5,3 +5,4 @@ tls/
 helm-values/values-jws-peers.yaml
 helm-values/values-local*.yaml
 .vscode/
+charts/*/charts/*.tgz

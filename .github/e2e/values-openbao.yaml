@@ -1,0 +1,20 @@
+# E2E on a one-node kind cluster: no switch, so enrolment cannot complete; this checks
+# what the chart itself does (bootstrap Job with its Role, store, Redis, policies, upgrades).
+dfspId: e2e-dfsp
+switch: { domain: switch.invalid, currency: USD }
+callback:
+  host: ml-connect.e2e.invalid
+  preflight: { enabled: false }
+  service: { type: NodePort }
+egress: { whitelistIps: [192.0.2.10] }
+mcm: { subject: { organization: E2E DFSP, country: RW, locality: Kigali } }
+sdk: { replicaCount: 1, resources: { requests: { cpu: 50m, memory: 128Mi } } }
+managementApi: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
+coreConnector:
+  replicaCount: 1
+  resources: { requests: { cpu: 50m, memory: 128Mi } }
+redis-ha:
+  existingSecret: ci-redis-auth
+  hardAntiAffinity: false
+  replicas: 2
+  haproxy: { hardAntiAffinity: false, replicas: 1 }

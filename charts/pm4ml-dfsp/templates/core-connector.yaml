@@ -1,0 +1,115 @@
+{{- if .Values.coreConnector.enabled -}}
+{{- $c := .Values.coreConnector -}}
+{{- $n := include "dfsp.ccName" . -}}
+{{- $sel := dict "name" "core-connector" "ctx" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+    app.kubernetes.io/name: core-connector
+spec:
+  replicas: {{ $c.replicaCount }}
+  selector:
+    matchLabels: {{- include "dfsp.selector" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "dfsp.labels" . | nindent 8 }}
+        app.kubernetes.io/name: core-connector
+    spec:
+      automountServiceAccountToken: false
+      {{- with $c.podSecurityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- if $c.affinity }}{{ toYaml $c.affinity | nindent 8 }}{{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {{- include "dfsp.selector" $sel | nindent 20 }}
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- with $c.extraVolumes }}{{ toYaml . | nindent 8 }}{{ end }}
+      containers:
+        - name: core-connector
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          ports:
+            - { name: backend, containerPort: {{ $c.port }} }
+            {{- range $c.extraPorts }}
+            - { name: {{ .name }}, containerPort: {{ .port }} }
+            {{- end }}
+          {{- with $c.readinessProbe }}
+          readinessProbe: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.livenessProbe }}
+          livenessProbe: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.securityContext }}
+          securityContext: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources: {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- with $c.extraVolumeMounts }}{{ toYaml . | nindent 12 }}{{ end }}
+          {{- with $c.envFrom }}
+          envFrom: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            # The SDK's outbound API: what the core connector calls to send a payment.
+            - { name: MLCONN_OUTBOUND_ENDPOINT, value: "http://{{ include "dfsp.sdkName" . }}:4001" }
+            - { name: SDK_OUTBOUND_URL, value: "http://{{ include "dfsp.sdkName" . }}:4001" }
+            - { name: DFSP_ID, value: {{ .Values.dfspId | quote }} }
+            - { name: DFSP_CURRENCY, value: {{ .Values.switch.currency | quote }} }
+            {{- if $c.injectRedisUrl }}
+            - name: REDIS_URL
+              valueFrom: { secretKeyRef: { name: {{ include "dfsp.fullname" . }}-runtime, key: cache-url } }
+            {{- end }}
+            {{- range $k, $v := $c.env }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+            {{- range $k, $v := $c.envFromSecrets }}
+            - name: {{ $k }}
+              valueFrom: { secretKeyRef: { name: {{ $v.secret }}, key: {{ $v.key }} } }
+            {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "dfsp.selector" $sel | nindent 4 }}
+  ports:
+    - { name: backend, port: {{ $c.port }}, targetPort: {{ $c.port }} }
+    {{- range $c.extraPorts }}
+    - { name: {{ .name }}, port: {{ .port }}, targetPort: {{ .port }} }
+    {{- end }}
+{{- if $c.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ $c.pdb.minAvailable }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels: {{- include "dfsp.selector" $sel | nindent 6 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,106 @@
+{{- if .Values.certCheck.enabled -}}
+{{- $f := include "dfsp.fullname" . -}}
+{{- $n := printf "%s-cert-check" $f -}}
+{{- $c := .Values.certCheck -}}
+# The DFSP's client certificate is signed by the hub in MCM, and nobody is notified
+# when management-api asks for its renewal (7 days before expiry). This CronJob
+# reads, with the DFSP's own MCM credentials, what MCM holds for this DFSP and fails
+# (and posts to certCheck.alertWebhook) when a renewal waits for the hub's
+# signature or the certificate expires within certCheck.warnDays.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+data:
+  pm4ml-cert-check.sh: |
+{{ .Files.Get "files/pm4ml-cert-check.sh" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+  annotations:
+    ignore-check.kube-linter.io/env-var-secret: "CLIENT_SECRET_FILE holds a file path; the secret is a mounted file"
+spec:
+  schedule: {{ $c.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0           # a failure is the finding
+      template:
+        metadata:
+          labels: {{- include "dfsp.labels" . | nindent 12 }}
+            app.kubernetes.io/name: cert-check
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext: { runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, fsGroup: 65534, seccompProfile: { type: RuntimeDefault } }
+          volumes:
+            - name: script
+              configMap: { name: {{ $n }} }
+            - name: mcm
+              secret: { secretName: {{ include "dfsp.mcmSecret" . }}, defaultMode: 0440, items: [ { key: {{ .Values.mcm.clientSecret.key }}, path: client-secret } ] }
+            {{- with $c.alertWebhook.existingSecret }}
+            - name: webhook
+              secret: { secretName: {{ . }}, defaultMode: 0440, items: [ { key: {{ $c.alertWebhook.key }}, path: url } ] }
+            {{- end }}
+            {{- if .Values.switch.caBundle }}
+            - name: switch-ca
+              configMap: { name: {{ include "dfsp.mgmtName" . }}-csr, items: [ { key: switch-ca.pem, path: ca.pem } ] }
+            {{- end }}
+          containers:
+            - name: check
+              image: {{ $c.image | default .Values.bootstrap.image }}
+              command: ["sh", "/scripts/pm4ml-cert-check.sh"]
+              env:
+                - { name: DFSP_ID, value: {{ .Values.dfspId | quote }} }
+                - { name: CLIENT_SECRET_FILE, value: /mcm/client-secret }
+                - { name: TOKEN_URL, value: "{{ include "dfsp.keycloakUrl" . }}/realms/{{ .Values.switch.realm }}/protocol/openid-connect/token" }
+                - { name: MCM_URL, value: {{ include "dfsp.mcmUrl" . | quote }} }
+                - { name: WARN_DAYS, value: {{ $c.warnDays | quote }} }
+                {{- if $c.alertWebhook.existingSecret }}
+                - { name: ALERT_WEBHOOK_URL_FILE, value: /webhook/url }
+                {{- end }}
+                {{- if .Values.switch.caBundle }}
+                - { name: CA_FILE, value: /switch-ca/ca.pem }
+                {{- end }}
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+              resources: { requests: { cpu: 10m, memory: 32Mi }, limits: { memory: 128Mi } }
+              volumeMounts:
+                - { name: script, mountPath: /scripts, readOnly: true }
+                - { name: mcm, mountPath: /mcm, readOnly: true }
+                {{- if $c.alertWebhook.existingSecret }}
+                - { name: webhook, mountPath: /webhook, readOnly: true }
+                {{- end }}
+                {{- if .Values.switch.caBundle }}
+                - { name: switch-ca, mountPath: /switch-ca, readOnly: true }
+                {{- end }}
+{{- if $c.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $n }}
+  labels: {{- include "dfsp.labels" . | nindent 4 }}
+    {{- with $c.prometheusRule.labels }}{{ toYaml . | nindent 4 }}{{ end }}
+spec:
+  groups:
+    - name: {{ $n }}
+      rules:
+        - alert: Pm4mlCertificateAttention
+          # The last run did not succeed: a renewal waits for the hub's signature, the
+          # client certificate expires within {{ $c.warnDays }} days, or MCM could not be read.
+          expr: >-
+            max(kube_cronjob_status_last_schedule_time{namespace="{{ .Release.Namespace }}", cronjob="{{ $n }}"})
+            - (max(kube_cronjob_status_last_successful_time{namespace="{{ .Release.Namespace }}", cronjob="{{ $n }}"}) or vector(0)) > 0
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ .Values.dfspId }}: client certificate renewal needs the hub, or the certificate expires soon"
+            description: "See the logs of the last {{ $n }} Job. Unsigned at expiry, the DFSP can no longer send payments: ask the hub operator to sign the renewal in MCM."
+{{- end }}
+{{- end }}

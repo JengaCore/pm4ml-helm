@@ -1,0 +1,86 @@
+# Kubernetes-native restore: a Job instead of secret-store/backup.sh restore.
+# Use it when the store's volume is lost: it brings back the same DFSP CA, keys
+# and enrolment from the latest snapshot that secret-store/backup-cronjob.yaml
+# uploaded (or SNAPSHOT_KEY), so the DFSP does not onboard again.
+#
+#   kubectl -n <ns> scale deploy/pm4ml-management-api --replicas=0
+#   kubectl -n <ns> apply -f jobs/restore.yaml           (or ./scripts/for-release.sh <release> ...)
+#   kubectl -n <ns> wait --for=condition=complete job/pm4ml-store-restore --timeout=10m
+#   Vault: unseal with the ORIGINAL keys (secret-store/unseal.sh or jobs/vault-unsealer-cronjob.yaml)
+#   OpenBao: it may stay sealed after the restore ("cannot write to readonly
+#   storage"); restart the store pod (its PVC keeps the data) and it unseals
+#   itself with the seal key. Seen and handled on 2026-11-18.
+#   kubectl -n <ns> scale deploy/pm4ml-management-api --replicas=1
+#
+# It reads the bucket with Secret pm4ml-backup-s3 (as the backup CronJob). On an
+# empty store it initialises a throwaway store first (its keys are discarded:
+# the snapshot replaces them). OpenBao: the seal key Secret must be the original
+# one. No RBAC: it only talks to the store and the bucket.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pm4ml-store-restore
+  labels: { app.kubernetes.io/name: store-bootstrap, app.kubernetes.io/instance: pm4ml }
+spec:
+  backoffLimit: 0                       # never retried blindly
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: store-bootstrap, app.kubernetes.io/instance: pm4ml }
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: work
+          emptyDir: {}
+      containers:
+        - name: restore
+          image: alpine/k8s:1.31.4             # aws, curl, jq
+          envFrom:
+            - secretRef: { name: pm4ml-backup-s3 }
+          env:
+            - { name: STORE_ADDR, value: "http://pm4ml-vault:8200" }
+            - { name: STORE, value: openbao }       # or vault
+            - { name: PREFIX, value: "pm4ml-store/" }  # as uploaded by backup-cronjob.yaml
+            - { name: SNAPSHOT_KEY, value: "" }      # empty: the newest under PREFIX
+            - { name: HOME, value: /work }
+          command:
+            - sh
+            - -ec
+            - |
+              A="$STORE_ADDR"; s3() { aws ${S3_ENDPOINT:+--endpoint-url "$S3_ENDPOINT"} "$@"; }
+              key="$SNAPSHOT_KEY"
+              [ -n "$key" ] || key=$(s3 s3api list-objects-v2 --bucket "$S3_BUCKET" --prefix "$PREFIX" \
+                                       --query 'reverse(sort_by(Contents,&LastModified))[0].Key' --output text)
+              echo "snapshot: s3://$S3_BUCKET/$key"
+              s3 s3 cp "s3://$S3_BUCKET/$key" /work/store.snap >/dev/null
+              until curl -s -o /dev/null "$A/v1/sys/health?uninitcode=200&sealedcode=200"; do sleep 3; done
+              if [ "$(curl -s "$A/v1/sys/init" | jq -r .initialized)" = "true" ]; then
+                echo "the store is initialised: restore only into an empty store (lost volume). Nothing done."; exit 1
+              fi
+              if [ "$STORE" = openbao ]; then body='{"recovery_shares":1,"recovery_threshold":1}'
+              else body='{"secret_shares":1,"secret_threshold":1}'; fi
+              curl -sf -X PUT "$A/v1/sys/init" --data "$body" > /work/throwaway.json
+              if [ "$STORE" = vault ]; then
+                curl -sf -X PUT "$A/v1/sys/unseal" --data "$(jq -c '{key: .keys_base64[0]}' /work/throwaway.json)" >/dev/null
+              fi
+              until [ "$(curl -s "$A/v1/sys/seal-status" | jq -r .sealed)" = "false" ]; do sleep 2; done
+              tok=$(jq -r .root_token /work/throwaway.json)
+              curl -sf -X POST -H "X-Vault-Token: $tok" --data-binary @/work/store.snap \
+                "$A/v1/sys/storage/raft/snapshot-force"
+              rm -f /work/throwaway.json /work/store.snap
+              echo "restored from $key."
+              if [ "$STORE" = vault ]; then echo "Vault: unseal with the ORIGINAL keys now."
+              else echo "OpenBao: if it stays sealed, restart the store pod: it unseals with its seal key at start."; fi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: work, mountPath: /work }

@@ -1,0 +1,20 @@
+# CI: managed Redis, Istio + ingress-nginx callbacks, external core connector, backups, PodMonitor.
+dfspId: ci-dfsp
+switch: { domain: switch.example.test, currency: USD }
+callback:
+  host: ml-connect.ci.example.test
+  service: { enabled: false }
+  istio: { enabled: true }
+  ingressNginx: { enabled: true }
+egress: { whitelistIps: [192.0.2.10] }
+redis: { mode: external, ha: { enabled: false }, external: { urlSecret: managed-redis } }
+coreConnector: { enabled: false, externalBackendEndpoint: core-connector.bank.svc:3003 }
+networkPolicies:
+  sdkOutboundFrom:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: bank } }
+      podSelector: { matchLabels: { app: core-connector } }
+backup: { enabled: true, s3Secret: ci-dfsp-backup-s3 }
+restore: { enabled: true }        # renders the restore Job (and skips bootstrap)
+monitoring: { podMonitor: { enabled: true } }
+certCheck: { alertWebhook: { existingSecret: ci-alert-webhook }, prometheusRule: { enabled: true } }
+bootstrap: { rbac: false }

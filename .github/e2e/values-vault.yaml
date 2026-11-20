@@ -1,0 +1,14 @@
+dfspId: e2e-dfsp
+switch: { domain: switch.invalid, currency: USD }
+callback:
+  host: ml-connect.e2e.invalid
+  preflight: { enabled: false }
+  service: { type: NodePort }
+egress: { whitelistIps: [192.0.2.10] }
+store: { type: vault }
+redis: { mode: single, ha: { enabled: false } }
+sdk: { replicaCount: 1, resources: { requests: { cpu: 50m, memory: 128Mi } } }
+managementApi: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
+coreConnector:
+  replicaCount: 1
+  resources: { requests: { cpu: 50m, memory: 128Mi } }
