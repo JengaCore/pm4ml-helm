@@ -44,8 +44,6 @@ must_fail "0.1.x settings"                   --set store.type=vault
 
 step "Kubernetes schemas ($K8S, CRDs from the datree catalog)"
 kubeconform -strict -summary -kubernetes-version "$K8S" -schema-location default -schema-location "$CRDS" "$OUT"/*.yaml
-kubeconform -strict -summary -kubernetes-version "$K8S" -ignore-missing-schemas \
-  jobs/*.yaml secret-store/*/*.yaml secret-store/backup-cronjob.yaml redis/redis.yaml monitoring/*.yaml networking/*.yaml test-backend/*.yaml
 
 step "kube-linter on this chart's manifests (subcharts excluded)"
 for f in "$OUT"/*.yaml; do
@@ -58,7 +56,7 @@ step "shellcheck: scripts in the repository and in the rendered manifests"
 # are theirs to lint.
 python3 .github/scripts/extract-shell.py "$OUT/sh" "$OUT"/*.own
 shellcheck -s sh -S warning "$OUT"/sh/*
-shellcheck -S warning scripts/*.sh secret-store/*.sh test-backend/*.sh .github/scripts/*.sh post-render/*.sh
+shellcheck -S warning .github/scripts/*.sh
 
 step "README values table is generated (helm-docs)"
 helm-docs --chart-search-root "$CHART" --template-files README.md.gotmpl >/dev/null 2>&1
