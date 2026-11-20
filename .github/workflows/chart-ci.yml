@@ -3,7 +3,7 @@ name: Chart CI
 # Every push and pull request: static checks of charts/pm4ml-dfsp, the manifests and
 # the scripts (.github/scripts/chart-checks.sh, runnable locally), then the chart on a
 # throwaway kind cluster for the two store/Redis combinations
-# (.github/scripts/e2e-kind.sh). chart-release.yml calls this before publishing.
+# (.github/scripts/e2e-kind.sh; skipped for a pull request that only touches documentation). chart-release.yml calls this before publishing.
 # push: main only; branches are covered by their pull request (one run per commit).
 on:
   push:
@@ -24,8 +24,10 @@ concurrency:
 jobs:
   static:
     name: Lint, schemas, policies, scripts, docs
-    runs-on: jengacore-k8s
+    runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      e2e: ${{ steps.scope.outputs.e2e }}
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -40,6 +42,29 @@ jobs:
 
       - name: Checks
         run: .github/scripts/chart-checks.sh
+
+      - name: Does the change need the kind end-to-end?
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Pushes to main, releases and manual runs always run it. A pull request runs it
+          # unless it touched only documentation, or only the chart version line.
+          need=true
+          if [ "$EVENT" = pull_request ]; then
+            need=false
+            while read -r f; do
+              case "$f" in
+                charts/pm4ml-dfsp/README.md|charts/pm4ml-dfsp/README.md.gotmpl) ;;
+                charts/pm4ml-dfsp/Chart.yaml)
+                  if git diff -U0 "$BASE" HEAD -- "$f" | grep -E '^[+-][^+-]' | grep -qvE '^[+-]version:'; then need=true; fi ;;
+                charts/*|.github/e2e/*|.github/scripts/e2e-kind.sh|.github/scripts/install-tools.sh|.github/workflows/chart-ci.yml) need=true ;;
+              esac
+            done < <(git diff --name-only "$BASE" HEAD)
+          fi
+          echo "kind end-to-end needed: $need"
+          echo "e2e=$need" >> "$GITHUB_OUTPUT"
 
       - name: Chart version bumped when the chart changed
         if: github.event_name == 'pull_request'
@@ -57,16 +82,12 @@ jobs:
   e2e:
     name: kind (${{ matrix.store }}, Redis ${{ matrix.redis }})
     needs: static
-    # kind needs a Docker daemon: the dind pool.
-    runs-on: jengacore-k8s-dind
+    if: needs.static.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
-      # One kind cluster per run: two at once from one run starved a dind runner (lost
-      # runner). Separate runs (two PRs, a merge and its release) can still overlap; the
-      # dind pool itself is capped at 4 runners (internal-infra github-runners). No
-      # cross-run queue: a concurrency group would cancel other PRs' pending jobs.
-      max-parallel: 1
+      # Each job has its own GitHub-hosted VM, so the two combinations run side by side.
       matrix:
         include:
           - { store: openbao, redis: ha,     values: .github/e2e/values-openbao.yaml }

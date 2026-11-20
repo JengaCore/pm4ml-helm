@@ -30,7 +30,7 @@ jobs:
     # Only main publishes: a manual run on another branch would push and sign an
     # unreviewed chart under the same identity.
     if: github.ref == 'refs/heads/main'
-    runs-on: jengacore-k8s
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
       release: ${{ steps.v.outputs.release }}
@@ -59,7 +59,7 @@ jobs:
   publish:
     name: Package, push, sign, tag
     needs: [version, verify]
-    runs-on: jengacore-k8s
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write   # tag + GitHub release
@@ -75,11 +75,8 @@ jobs:
 
       - name: Tools (pinned versions, checked SHA-256)
         run: |
-          .github/scripts/install-tools.sh "$HOME/.local/bin" helm
+          .github/scripts/install-tools.sh "$HOME/.local/bin" helm cosign
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Package
         run: |

@@ -4,7 +4,7 @@
 # its checksum, taken from the release's own checksum file where it publishes one.
 # Needs only curl, tar, gzip and python3 on the runner (no apt: the Ubuntu archive was
 # unreachable from the runners on 2026-11-19 and took CI down with it).
-#   install-tools.sh <dir> helm kubeconform kube-linter helm-docs shellcheck actionlint kind docker
+#   install-tools.sh <dir> helm kubeconform kube-linter helm-docs shellcheck actionlint kind docker cosign
 set -euo pipefail
 DIR="$1"; shift; mkdir -p "$DIR"; W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 fetch() { # url sha256 file
@@ -40,6 +40,9 @@ for t in "$@"; do
     kubectl)     fetch https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl \
                    298e19e9c6c17199011404278f0ff8168a7eca4217edad9097af577023a5620f kubectl
                  install -m 0755 "$W/kubectl" "$DIR/kubectl" ;;
+    cosign)      fetch https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 \
+                   424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa cosign
+                 install -m 0755 "$W/cosign" "$DIR/cosign" ;;
     actionlint)  fetch https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
                    8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 al.tgz
                  tar -xzf "$W/al.tgz" -C "$DIR" actionlint ;;

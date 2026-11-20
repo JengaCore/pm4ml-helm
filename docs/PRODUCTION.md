@@ -26,11 +26,9 @@ key that opens it**. Kept in different places.
 flowchart LR
     store[("Secret store<br/>persistent encrypted volume")]
     store -- "scheduled snapshot<br/>(backup-only access)" --> obj[("Object storage<br/>versioned, locked")]
-    store -- "identity export<br/>(store's own read access)" --> sm[("Secrets manager<br/>break-glass copy")]
     unseal[("Unseal material<br/>custodians or KMS")]
     obj -. "restore: same CA,<br/>no new onboarding" .-> store
     unseal -. "opens" .-> store
-    sm -. "static mode<br/>if the store is down" .-> pm["Payment manager"]
 ```
 
 ```mermaid
@@ -42,31 +40,19 @@ flowchart TB
 
 ## Keeping the store's data
 
-1. **Persistent volume.** `secret-store/vault` and `secret-store/openbao` use a
-   PVC (`volumeClaimTemplates`). Use an encrypted, zone-redundant or
-   snapshotted storage class (AWS gp3 with a KMS key, Azure Premium ZRS, Ceph).
+1. **Persistent volume.** OpenBao and Vault run on a volume (`openbao.server.dataStorage`
+   or `vault.server.dataStorage`, with `storageClass`). Use an encrypted,
+   zone-redundant or snapshotted storage class (AWS gp3 with a KMS key, Azure
+   Premium ZRS, Ceph). The chart refuses to render a store without a volume unless
+   `store.acceptDataLoss` is set.
 2. **Raft snapshots off-cluster.** The stores use Raft, which takes consistent
-   online snapshots:
-   ```bash
-   NS=$NS RELEASE=$R STORE=openbao ./secret-store/backup.sh save store-$(date +%F).snap
-   ```
-   It logs in with the snapshot-only AppRole that `init.sh` creates (Secret
-   `<release>-store-backup`, policy: read `sys/storage/raft/snapshot`, nothing
-   else; tested: it gets `403` on the DFSP's keys). No root token is needed, so
-   the root token goes to escrow as `init.sh` says.
-   On a schedule: `secret-store/backup-cronjob.yaml` (any Kubernetes, any S3-compatible
-   bucket; tested), or the platform's backup job. Ship the file
-   to object storage with versioning and object lock. **Tested:** snapshot,
-   pod deleted with its data, empty store initialised (`INIT_ONLY=1`),
-   snapshot restored: same CA fingerprint, no new enrolment in MCM,
-   management-api resumed with its original AppRole.
-3. **An exported identity as a second copy.** `scripts/export-identity.sh`
-   writes the certificates, keys and peer keys to files, read with
-   management-api's own AppRole. Put them in a secrets manager (AWS Secrets
-   Manager, Azure Key Vault) as a break-glass copy, or use them to run in
-   static mode. **Tested:** exported, then the same DFSP ran in static mode on
-   Kubernetes Secrets alone and sent and received payments.
-4. **The unseal material elsewhere.** Vault: the 5 key shares with different
+   online snapshots. The backup CronJob (`backup.enabled`, bucket credentials in
+   the Secret named by `backup.s3Secret`) ships them to any S3-compatible bucket.
+   Use a bucket with versioning and object lock. **Tested:** the store's volume
+   deleted, the restore Job (`restore.enabled`) run: same CA fingerprint, no new
+   enrolment in MCM, management-api resumed. See "Backups and restore" in the
+   [chart README](../charts/pm4ml-dfsp/README.md#backups-and-restore).
+3. **The unseal material elsewhere.** Vault: the 5 key shares with different
    custodians. OpenBao static seal: Secret `<release>-openbao-seal`, backed up
    to a different system than the snapshots. With a cloud KMS seal the key never
    leaves the KMS: back up nothing, but protect the KMS key from deletion.
@@ -74,42 +60,17 @@ flowchart TB
 Never `kubectl delete pvc` on the store to "start clean": that is the
 "onboard again" row above.
 
-### Upgrading a store from file to Raft
-
-Stores created before the Raft change keep the file backend's data on the
-volume (`core/`, `logical/`, `sys/`). Raft does not read it: the store would
-come up uninitialised, and initialising it would mean onboarding again.
-`init.sh` refuses to initialise such a volume. To upgrade:
-
-1. Back up the identity first: `OUT=/secure/dir ./scripts/export-identity.sh`.
-2. Stop the store (`kubectl scale statefulset <release>-vault --replicas=0`) and
-   management-api.
-3. Run the offline migration in a one-off pod that mounts the volume, with a
-   `migrate.hcl` naming `storage_source "file" { path = ".../file" }` and
-   `storage_destination "raft" { path = ".../file/raft-data" node_id = "pm4ml-vault-0" }` and
-   `cluster_addr = "http://127.0.0.1:8201"` (required when the destination is Raft),
-   then `vault operator migrate -config=migrate.hcl` (`bao operator migrate` for OpenBao).
-4. Point the Raft `path` in the store's ConfigMap at `.../file/raft-data`, start the store, unseal it with
-   the existing keys, and check the CA fingerprint is unchanged.
-
-Not run in the validation: the test stores were created on Raft.
-
 ## Choosing the pieces
 
 | Piece | Option | Tested | Use when |
 |---|---|---|---|
-| Secret store | Vault 1.13.3, Shamir (= Compose) | ✓ incl. restart, sealed state, unseal | Custodians can unseal after a restart (payments continue while it is sealed: tested) |
-| | OpenBao 2.6.5, static seal | ✓ incl. restart, Raft snapshot restore | Nobody can be on call to unseal |
+| Secret store | OpenBao 2.6.5, static seal (default) | ✓ incl. restart, Raft snapshot restore | Nobody can be on call to unseal |
+| | Vault 1.13.3, Shamir (`presets/store-vault.yaml`, = Compose) | ✓ incl. restart, sealed state, unseal | Custodians can unseal after a restart (payments continue while it is sealed: tested) |
 | | Vault/OpenBao with a cloud KMS seal | — | On AWS/Azure: the seal key stays in the KMS |
 | | Managed Vault (HCP) | — | No store to operate |
-| | None: static mode, Kubernetes Secrets | ✓ send/receive | Pilots; manual renewal; identity kept in a secrets manager |
-| Redis | in-cluster `redis/redis.yaml` (single) | ✓ | Test only: a crash failed 47 of 60 payments in flight |
-| | in-cluster `redis/values-redis-ha.yaml` (Sentinel + HAProxy, AUTH, NetworkPolicies on Redis and HAProxy) | ✓ master killed under load: 60/60; AUTH on; another DFSP's pod cannot reach it | Production on any cluster |
-| | Managed: ElastiCache / Azure Cache, primary endpoint, TLS + AUTH | — | Cloud production; use the non-cluster mode (the SDK uses a single-node client) |
-
-Turning on Redis AUTH on a running redis-ha does not roll: the new replica
-cannot authenticate to the old master. Restart all Redis pods together, in a
-maintenance window (seen on 2026-11-18).
+| Redis | Valkey, single node (default) | ✓ | Test only: a crash failed 47 of 60 payments in flight |
+| | Valkey HA: Sentinel + HAProxy (`presets/valkey-ha.yaml`) | ✓ master killed under load: 60/60; password on; another DFSP's pod cannot reach it | Production on any cluster |
+| | Managed: ElastiCache / Azure Cache, primary endpoint, TLS + AUTH (`presets/redis-external.yaml`) | — | Cloud production; use the non-cluster mode (the SDK uses a single-node client) |
 
 ## Publishing the callback host: mutual TLS end to end
 
@@ -151,7 +112,7 @@ Settings that matter:
   the load balancer.
 
 Validated on 2026-11-18 with plain L4 `LoadBalancer` Services
-(`networking/loadbalancer.yaml`) on two DFSPs against sbx UAT.
+(the chart's callback Service) on two DFSPs against sbx UAT.
 
 ## Idempotency: the core connector's part
 
@@ -270,16 +231,15 @@ flowchart LR
 | Redis | ElastiCache for Redis/Valkey, cluster mode disabled, Multi-AZ with automatic failover, encryption in transit and at rest, AUTH token. `cache-url = rediss://:<token>@<primary endpoint>:6379` stored in Secrets Manager |
 | Secret store | OpenBao or Vault in-cluster on gp3 (KMS-encrypted) with the KMS seal (Vault `seal "awskms"`; OpenBao 2.7+ as a plugin, or 2.6 built in) through IRSA; Raft snapshots by a CronJob to S3. Or HCP Vault Dedicated in the same region (AppRole) |
 | Other secrets | Secrets Manager, synced by External Secrets Operator into `<release>-mcm` (client secret) and `<release>-runtime` (ILP secret, Redis URL) |
-| Identity break-glass copy | `export-identity.sh` output in Secrets Manager (one secret, KMS CMK, access logged by CloudTrail), refreshed after each renewal |
 | Not usable | AWS Secrets Manager or ACM as the store for management-api: it needs a Vault-API PKI (it signs CSRs). AWS Private CA could, but only with code changes. ALB for callbacks |
-| Observability | Amazon Managed Prometheus (PodMonitor / annotations on :4004), CloudWatch Container Insights or Loki for logs, alerts from `monitoring/podmonitor.yaml` |
+| Observability | Amazon Managed Prometheus (PodMonitor / annotations on :4004), CloudWatch Container Insights or Loki for logs, alerts from the PodMonitor (`monitoring.podMonitor.enabled`) |
 
 ## The same on Azure and on-premises
 
 | Concern | Azure | On-premises |
 |---|---|---|
 | Callback host | Standard Load Balancer, static public IP, NSG with the hub IPs; not Application Gateway | MetalLB (L2/BGP) or F5/HAProxy in TCP mode |
-| Redis | Azure Cache for Redis (Premium), non-clustered, TLS + access key | `redis/values-redis-ha.yaml` on replicated storage |
+| Redis | Azure Cache for Redis (Premium), non-clustered, TLS + access key | `presets/valkey-ha.yaml` on replicated storage |
 | Store seal | Vault/OpenBao `azurekeyvault` seal with workload identity | OpenBao static seal (key in a separate secret system), or an HSM (PKCS#11) |
 | Store data | Azure Disk Premium ZRS + snapshots to Blob (immutable) | Ceph/Longhorn + snapshots to an off-site object store |
 | Secrets | Key Vault + External Secrets Operator | Vault/OpenBao of the platform team, or sealed-secrets |
