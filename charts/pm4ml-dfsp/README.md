@@ -1,6 +1,6 @@
 # pm4ml-dfsp
 
-![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-informational?style=flat-square) ![AppVersion: v24.19.3](https://img.shields.io/badge/AppVersion-v24.19.3-informational?style=flat-square)
+![Version: 0.2.1](https://img.shields.io/badge/Version-0.2.1-informational?style=flat-square) ![AppVersion: v24.19.3](https://img.shields.io/badge/AppVersion-v24.19.3-informational?style=flat-square)
 
 Helm chart for a DFSP's Payment Manager (PM4ML) on any Kubernetes, connected to
 a jengacore switch through MCM. It follows
@@ -270,7 +270,7 @@ Core connector deployed elsewhere: `coreConnector.enabled: false` and
 The core connector must keep its own record of the payments it starts (keyed by
 `homeTransactionId`) and, after an error or timeout, ask
 `GET /transfers/{transferId}` on the SDK before retrying: the SDK does not
-de-duplicate. See [docs/BUILDING-BLOCKS.md](../../docs/BUILDING-BLOCKS.md).
+de-duplicate. See [docs/PRODUCTION.md](../../docs/PRODUCTION.md#idempotency-the-core-connectors-part).
 
 ## Validation
 

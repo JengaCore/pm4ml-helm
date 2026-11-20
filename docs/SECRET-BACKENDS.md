@@ -19,42 +19,25 @@ are all the calls it makes (from `mcm-client` `src/lib/vault/index.ts`, checked
 | State machine and keys | KV **v1** read/write/delete under `secrets/` |
 | Health | `sys/health` |
 
-The sdk-scheme-adapter never calls Vault. In **static mode**
-(`values-static.yaml`) nothing calls Vault, and every key lives in a Kubernetes
-Secret. That is how the original ThitsaX repo runs.
+The sdk-scheme-adapter never calls Vault. A deployment without management-api
+("static mode", as the original ThitsaX repo runs) needs no store, but this chart
+does not provide it.
 
 ## The options
 
 | Option | Code change | Who unseals | Status in this repo |
 |---|---|---|---|
-| **Default: HashiCorp Vault 1.13.3**, AppRole (`secret-store/vault`) | none | a person, 3 of 5 keys, after every restart (`secret-store/unseal.sh`) | = JengaCore/pm4ml-docker-compose. **Tested 2026-11-18** |
-| **B. OpenBao**, static-key seal (`secret-store/openbao`) | none (same API) | itself, from a Kubernetes Secret | **Tested 2026-11-18**, including a restart that unsealed itself. Recommended when nobody can be on call to unseal |
-| **A. Static mode**, Kubernetes Secrets only (`values-static.yaml`) | none | n/a | Renders; manual onboarding |
-| **C. Vault with cloud-KMS auto-unseal** (AWS KMS, Azure Key Vault) | none | the KMS | Add a `seal` block to the default's config |
-| **D. Managed Vault** (HCP Vault Dedicated) | none | the provider | Point `VAULT_ENDPOINT` at it, AppRole |
+| **Default: OpenBao**, static-key seal | none (same API) | itself, from a Kubernetes Secret | **Tested 2026-11-18**, including a restart that unsealed itself. Recommended when nobody can be on call to unseal |
+| **HashiCorp Vault 1.13.3**, AppRole (`presets/store-vault.yaml`) | none | a person, 3 of 5 keys, after every restart | = JengaCore/pm4ml-docker-compose. **Tested 2026-11-18** |
+| **C. Vault or OpenBao with cloud-KMS auto-unseal** (AWS KMS, Azure Key Vault) | none | the KMS | Add a `seal` block to the store's config |
+| **D. Managed Vault** (HCP Vault Dedicated) | none | the provider | Point management-api's `VAULT_ENDPOINT` at it, AppRole |
 | **E. Cloud secret managers** (AWS Secrets Manager, Azure Key Vault) | **yes** | the provider | Not possible today. See below |
 | **F. A Kubernetes-Secret backend inside mcm-client** | **yes**, in a fork | n/a | Possible later. See below |
 
-Both tested stores use the same Service name (`pm4ml-vault`) and the same
-`secret-store/init.sh`, so switching between them changes no Helm value.
+Both stores are set up by the chart's bootstrap Job (mounts, DFSP CA, AppRole), so
+switching between them (`presets/store-vault.yaml`) changes no other value.
 
-### A. Static mode (no secret store)
-
-What you lose compared with MCM mode:
-
-- **Onboarding is manual.** The DFSP generates its CSR. The hub operator signs it
-  and sends back the certificate. The DFSP's CA and server certificate are
-  exchanged by hand.
-- **Renewal is manual.** Nothing watches expiry. The certificate shipped in the
-  upstream repo had already expired (2026-07-14) when this was written.
-- **Peer JWS keys are a values file.** Every new DFSP on the scheme means an
-  edit and `helm upgrade` at every other static-mode DFSP. The hub key (`Hub`)
-  must be in the list, or every transfer where this DFSP is the payee times out
-  after the ledger has already settled it.
-
-This works for a pilot. It does not scale to a scheme with many participants.
-
-### B. OpenBao
+### OpenBao
 
 OpenBao is the Linux Foundation fork of Vault 1.14 (MPL-2.0). Its API is
 Vault's, so management-api needs **no change**. Set `VAULT_ENDPOINT` to the
@@ -76,14 +59,14 @@ in either of two ways:
   already in place. From OpenBao 2.7, KMS seals are external plugins, so pin the
   version you test with.
 
-Sizing: one replica with integrated storage (Raft) on a 1 Gi volume, ~100 MiB RAM. Back it up with `secret-store/backup.sh` (Raft snapshots). It holds one
+Sizing: one replica with integrated storage (Raft) on a 1 Gi volume, ~100 MiB RAM. Back it up with the backup CronJob (Raft snapshots). It holds one
 DFSP's CA and keys. HA is optional, because management-api is only on the
 onboarding and renewal path, not on the transfer path. With the store down,
 transfers keep running on the certificates already loaded.
 
-`secret-store/init.sh` does the setup for both stores, with AppRole as in
-Compose. If you prefer Kubernetes auth (no secret-id to rotate), the equivalent
-is below. It needs a ClusterRoleBinding to `system:auth-delegator`:
+The bootstrap Job does the setup for both stores, with AppRole as in
+Compose. Kubernetes auth (no secret-id to rotate) is not configured by the chart;
+the equivalent, to apply by hand, is below. It needs a ClusterRoleBinding to `system:auth-delegator`:
 
 ```bash
 bao auth enable kubernetes
@@ -103,7 +86,7 @@ bao write pki/roles/server-cert-role allow_any_name=true max_ttl=17520h
 bao write pki/roles/client-cert-role allow_any_name=true max_ttl=17520h
 ```
 
-### C/D. Vault, self-hosted or managed
+### C and D. Vault, self-hosted or managed
 
 The same setup and the same values. On AWS or AKS, configure KMS auto-unseal.
 A managed Vault outside the cluster has to use AppRole, because Kubernetes auth
@@ -119,10 +102,9 @@ Vault can hold certificates but cannot act as your CA. Supporting
 them means writing a new backend in `mcm-client`, the same work as F, plus
 cloud-specific code.
 
-Use them *around* PM4ML instead: the External Secrets Operator can sync the
-static-mode Secrets (`pm4ml-tls`, `pm4ml-jws`, `pm4ml-runtime`) or the OpenBao
-unseal key from AWS Secrets Manager or Azure Key Vault. That works with no code
-change.
+Use them *around* PM4ML instead: the External Secrets Operator can sync the MCM
+client secret or the OpenBao unseal key from AWS Secrets Manager or Azure Key
+Vault. That works with no code change.
 
 ### F. A Kubernetes-Secret backend in mcm-client (possible fork work)
 
@@ -130,8 +112,8 @@ The Vault surface above is small, about eight operations. A backend that does
 the PKI with Node's `crypto` (as `switch-connector-sdk`'s `mcm enrol` already
 does) and keeps state in one Kubernetes Secret would give MCM-mode automation
 without any secret store. The cost is a fork of `@pm4ml/mcm-client` and of
-`management-api` that someone has to maintain. Do it only if B turns out to be
-a real barrier for DFSPs. Otherwise B gives the same result with no code.
+`management-api` that someone has to maintain. Do it only if OpenBao turns out to be
+a real barrier for DFSPs. Otherwise OpenBao gives the same result with no code.
 
 ### The other route: switch-connector-sdk
 
