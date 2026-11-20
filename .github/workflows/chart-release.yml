@@ -30,7 +30,7 @@ jobs:
     # Only main publishes: a manual run on another branch would push and sign an
     # unreviewed chart under the same identity.
     if: github.ref == 'refs/heads/main'
-    runs-on: jengacore-k8s
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
       release: ${{ steps.v.outputs.release }}
@@ -59,7 +59,7 @@ jobs:
   publish:
     name: Package, push, sign, tag
     needs: [version, verify]
-    runs-on: jengacore-k8s
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write   # tag + GitHub release

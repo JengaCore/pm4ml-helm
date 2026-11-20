@@ -24,7 +24,7 @@ concurrency:
 jobs:
   static:
     name: Lint, schemas, policies, scripts, docs
-    runs-on: jengacore-k8s
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -58,7 +58,7 @@ jobs:
     name: kind (${{ matrix.store }}, Redis ${{ matrix.redis }})
     needs: static
     # kind needs a Docker daemon: the dind pool.
-    runs-on: jengacore-k8s-dind
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
