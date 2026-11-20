@@ -90,6 +90,28 @@ Run every command from the root of a clone of this repository.
 8. Ask the hub operator to sign the DFSP's certificate request in MCM.
    management-api installs the certificates when they are signed.
 
+### Installing from the registry
+
+Released versions are also published as OCI artifacts, so the chart can be
+installed without cloning. Steps 2 and 3 are the same. The example values are in
+the chart, so pull it first:
+
+```sh
+helm pull oci://ghcr.io/jengacore/charts/pm4ml-dfsp --version 0.2.2 --untar
+cp pm4ml-dfsp/examples/values-production.yaml my-values.yaml
+helm -n dfsp install mydfsp oci://ghcr.io/jengacore/charts/pm4ml-dfsp \
+  --version 0.2.2 -f my-values.yaml
+```
+
+Replace `0.2.2` with the version you want; the released versions are listed under
+the repository's Releases. To verify the signature before installing:
+
+```sh
+cosign verify ghcr.io/jengacore/charts/pm4ml-dfsp:0.2.2 \
+  --certificate-identity https://github.com/JengaCore/pm4ml-helm/.github/workflows/chart-release.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 ## Configuration
 
 Settings are in `values.yaml` in the chart. Secrets never go in the values file.
