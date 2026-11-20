@@ -1,0 +1,44 @@
+# TEST ONLY: one Valkey (appendonly yes) for the connector's journal and pending requests to pay.
+# On an emptyDir: its data goes with the pod (a test). The URL, with its password, is in a Secret:
+#   PW=$(openssl rand -hex 24); kubectl -n $NS create secret generic $DFSP_ID-valkey --from-literal=password=$PW \
+#     --from-literal=url="redis://:$PW@$DFSP_ID-valkey.$NS.svc.cluster.local:6379"; unset PW
+#   envsubst < valkey.yaml | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ${DFSP_ID}-valkey, namespace: ${NS}, labels: { app: ${DFSP_ID}-valkey } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ${DFSP_ID}-valkey } }
+  template:
+    metadata: { labels: { app: ${DFSP_ID}-valkey } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 999, fsGroup: 999, seccompProfile: { type: RuntimeDefault } }
+      automountServiceAccountToken: false
+      containers:
+        - name: valkey
+          image: valkey/valkey:8.1.4
+          command: [sh, -c, 'exec valkey-server --appendonly yes --dir /data --requirepass "$(cat /run/secrets/valkey/password)"']
+          ports: [{ containerPort: 6379 }]
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 20m, memory: 64Mi }, limits: { memory: 256Mi } }
+          volumeMounts: [ { name: data, mountPath: /data }, { name: pw, mountPath: /run/secrets/valkey, readOnly: true } ]
+      volumes:
+        - { name: data, emptyDir: {} }
+        - { name: pw, secret: { secretName: ${DFSP_ID}-valkey, defaultMode: 0440 } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ${DFSP_ID}-valkey, namespace: ${NS} }
+spec:
+  selector: { app: ${DFSP_ID}-valkey }
+  ports: [{ port: 6379 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: ${DFSP_ID}-valkey, namespace: ${NS} }
+spec:
+  podSelector: { matchLabels: { app: ${DFSP_ID}-valkey } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: switch-connector, dfsp: ${DFSP_ID} } } }]
+      ports: [{ port: 6379 }]

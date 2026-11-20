@@ -1,0 +1,67 @@
+# One test DFSP on the Coder cluster against sbx UAT (ISO 20022), as validated in
+# Nov 2026. Replace every <...>; nothing secret goes in this file.
+#   helm upgrade --install <release> ../../charts/pm4ml-dfsp -n <ns> -f values-uat.yaml
+dfspId: <dfsp id the hub operator admitted, e.g. pm4mlhelm05>
+switch:
+  domain: uat.sandbox.jengacore.com
+  apiType: iso20022
+  ilpVersion: '4'
+  currency: GMD
+callback:
+  # Install first with the host only, read the callback load balancer's address
+  # (kubectl get svc <release>-callbacks), then set both. sslip.io needs no DNS record.
+  host: ml-connect.<a-b-c-d>.sslip.io
+  preflight:
+    expectIP: <a.b.c.d>
+egress:
+  # The Coder cluster's egress address, given to the switch by MCM.
+  whitelistIps:
+    - <egress ip>
+mcm:
+  subject: { organization: jengacore test, country: RW, locality: Kigali }
+# The Mojaloop simulator as core connector: it answers lookups, quotes and
+# transfers for any MSISDN, so payments need no core banking.
+coreConnector:
+  image: { repository: mojaloop/mojaloop-simulator, tag: v15.5.4 }
+  port: 3000
+  extraPorts: [{ name: testapi, port: 3003 }]
+  injectRedisUrl: false
+  env:
+    SIMULATOR_API_LISTEN_PORT: '3000'
+    REPORT_API_LISTEN_PORT: '3002'
+    TEST_API_LISTEN_PORT: '3003'
+    OUTBOUND_ENDPOINT: http://<release>-sdk:4001
+    MODEL_DATABASE: /tmp/model.sqlite
+    SQLITE_LOG_FILE: /tmp/log.sqlite
+    RULES_FILE: /rules/rules.json
+    FEE_MULTIPLIER: '0'
+    MUTUAL_TLS_ENABLED: 'false'
+    HTTPS_ENABLED: 'false'
+    LOG_INDENT: '0'
+    DFSP_ID: <dfsp id>
+  replicaCount: 1
+  pdb: { enabled: false }
+  resources: { requests: { cpu: 50m, memory: 256Mi }, limits: { memory: 512Mi } }
+  readinessProbe: { httpGet: { path: /, port: 3000 } }
+  # kubectl -n <ns> create configmap <release>-sim-rules --from-literal=rules.json='[]'
+  extraVolumes: [{ name: rules, configMap: { name: <release>-sim-rules } }]
+  extraVolumeMounts: [{ name: rules, mountPath: /rules }]
+# The workspace's service account may not create RBAC: run the bootstrap and
+# restore steps as Jobs without their Role (see README).
+bootstrap: { rbac: false, enabled: false }
+restore: { enabled: true, rbac: false }
+sdk: { replicaCount: 3 }
+# Backups to the in-cluster S3 mock (adobe/s3mock:3.12.0, Secret pm4ml-backup-s3:
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, S3_BUCKET, S3_ENDPOINT).
+backup: { enabled: true, s3Secret: pm4ml-backup-s3, schedule: '*/30 * * * *' }
+networkPolicies:
+  sdkOutboundFrom:
+    - podSelector: { matchLabels: { role: payment-tester } }
+openbao:
+  server:
+    dataStorage: { enabled: true, size: 1Gi, storageClass: csi-cinder-sc-delete }
+    volumes:
+      - name: seal
+        secret: { secretName: <release>-openbao-seal, defaultMode: 288 }
+valkey:
+  persistence: { enabled: false, size: '' }

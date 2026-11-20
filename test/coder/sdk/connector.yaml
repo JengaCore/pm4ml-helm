@@ -1,0 +1,102 @@
+# TEST ONLY: one SDK connector (the switch-connector-sdk example) as a DFSP on sbx UAT,
+# from the Coder cluster. The image is built locally (the CI image is private and the
+# cluster has no pull secret), so a "load" init container waits for the built /app and
+# /cli to be copied in (load-app.sh). Credentials live on an emptyDir: `mcm enrol`
+# creates them at the first start; they are lost with the pod (fine for a test).
+#   export NS=default DFSP_ID=sdkhelm02 CALLBACK_HOST=sdkhelm02.<a-b-c-d>.sslip.io \
+#          SWITCH_DOMAIN=uat.sandbox.jengacore.com MSISDN=25677000006 CURRENCY=GMD
+#   kubectl -n $NS create secret generic $DFSP_ID-mcm --from-literal=client-secret=<from the hub operator>
+#   kubectl -n $NS create secret generic $DFSP_ID-ilp --from-literal=secret=$(openssl rand -hex 32)
+#   envsubst < connector.yaml | kubectl apply -f - && sh load-app.sh deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ${DFSP_ID}, namespace: ${NS}, labels: { app: switch-connector, dfsp: ${DFSP_ID} } }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: switch-connector, dfsp: ${DFSP_ID} } }
+  template:
+    metadata: { labels: { app: switch-connector, dfsp: ${DFSP_ID} } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      automountServiceAccountToken: false
+      initContainers:
+        - name: load
+          image: node:24.22.3-alpine
+          command: [sh, -c, "until [ -f /app/.ready ] && [ -f /cli/.ready ]; do sleep 2; done"]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts: [ { name: app, mountPath: /app }, { name: cli, mountPath: /cli } ]
+        - name: mcm-enrol
+          image: node:24.22.3-alpine
+          command: [node, /cli/dist/index.js, mcm, enrol, --wait, --wait-seconds, "86400"]
+          env: &mcm-env
+            - { name: DFSP_ID, value: "${DFSP_ID}" }
+            - { name: SWITCH_DOMAIN, value: "${SWITCH_DOMAIN}" }
+            - { name: CALLBACK_HOST, value: "${CALLBACK_HOST}" }
+            - { name: MCM_OUT, value: /certs }
+            - { name: MCM_CLIENT_SECRET_FILE, value: /run/secrets/mcm/client-secret }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts: &mcm-mounts
+            - { name: credentials, mountPath: /certs }
+            - { name: cli, mountPath: /cli, readOnly: true }
+            - { name: mcm-secret, mountPath: /run/secrets/mcm, readOnly: true }
+      containers:
+        - name: connector
+          image: node:24.22.3-alpine
+          workingDir: /app
+          command: [node, dist/src/index.js]
+          env:
+            - { name: NODE_ENV, value: production }
+            - { name: SWITCH_CONNECTOR_FSP_ID, value: "${DFSP_ID}" }
+            - { name: SWITCH_URL, value: "https://fspiop.${SWITCH_DOMAIN}" }
+            - { name: SWITCH_PROTOCOL, value: iso20022 }
+            - { name: TLS_DIR, value: /certs }
+            - { name: ILP_VERSION, value: "4" }
+            - { name: MOCK_ACCOUNTS, value: "${MSISDN}=Test Customer" }
+            - { name: REGISTER_PARTIES, value: "true" }
+            - { name: PARTY_CURRENCY, value: "${CURRENCY}" }
+            - { name: R2P_AUTO_ACCEPT_MAX, value: "1000" }
+            - { name: SIDECAR_HOST, value: 0.0.0.0 }
+            - { name: ILP_SECRET_FILE, value: /run/secrets/ilp/secret }
+          ports: [ { name: fspiop, containerPort: 3000 }, { name: sidecar, containerPort: 3001 } ]
+          readinessProbe: { httpGet: { path: /health, port: sidecar }, periodSeconds: 5 }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 1Gi } }
+          volumeMounts:
+            - { name: app, mountPath: /app, readOnly: true }
+            - { name: credentials, mountPath: /certs, readOnly: true }
+            - { name: ilp-secret, mountPath: /run/secrets/ilp, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+        # Keeps the hub CA, peer JWS keys and the client certificate current, as management-api does.
+        - name: mcm-watch
+          image: node:24.22.3-alpine
+          command: [node, /cli/dist/index.js, mcm, enrol, --watch, "60"]
+          env: *mcm-env
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 10m, memory: 64Mi }, limits: { memory: 256Mi } }
+          volumeMounts: *mcm-mounts
+      volumes:
+        - { name: app, emptyDir: {} }
+        - { name: cli, emptyDir: {} }
+        - { name: credentials, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+        - { name: mcm-secret, secret: { secretName: "${DFSP_ID}-mcm", defaultMode: 0440 } }
+        - { name: ilp-secret, secret: { secretName: "${DFSP_ID}-ilp", defaultMode: 0440 } }
+---
+# The sidecar API (send, request-to-pay, bulk) for the tester pod.
+apiVersion: v1
+kind: Service
+metadata: { name: ${DFSP_ID}, namespace: ${NS} }
+spec:
+  selector: { app: switch-connector, dfsp: ${DFSP_ID} }
+  ports: [ { name: http-sidecar, port: 3001, targetPort: sidecar } ]
+---
+# The callback address the switch calls: TCP 443 to the connector's mutual-TLS port.
+apiVersion: v1
+kind: Service
+metadata: { name: ${DFSP_ID}-callbacks, namespace: ${NS} }
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector: { app: switch-connector, dfsp: ${DFSP_ID} }
+  ports: [ { name: tls, port: 443, targetPort: fspiop } ]

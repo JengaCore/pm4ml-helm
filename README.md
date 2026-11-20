@@ -248,6 +248,7 @@ reinstall (`callback.service.keep`). Persistent volumes are not deleted.
 - [docs/SECRET-BACKENDS.md](docs/SECRET-BACKENDS.md)
 - [docs/REVIEW-2026-11.md](docs/REVIEW-2026-11.md): review of ThitsaX/pm4ml-deployment
 - [docs/NEXT-SWITCH-CONNECTOR-SDK.md](docs/NEXT-SWITCH-CONNECTOR-SDK.md)
+- [test/coder/README.md](test/coder/README.md): re-running the UAT tests from a Coder workspace, with Claude Code
 
 Chart checks run on every pull request (`.github/workflows/chart-ci.yml`) and can
 be run locally with `.github/scripts/chart-checks.sh`.

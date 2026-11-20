@@ -1,0 +1,90 @@
+# TEST ONLY: the SDK connector as a 3-replica cluster (cluster mode), on sbx UAT.
+# Credentials come from the single renewer's Secrets (renewer.sh): ${DFSP_ID}-tls as
+# TLS_DIR and ${DFSP_ID}-tls-jws-peers as JWS_KEYS_DIR. The journal and a request to
+# pay's PENDING state go to Valkey (valkey.yaml, REDIS_URL_FILE). The app is copied in
+# by the "load" init container (load-app.sh statefulset).
+#   kubectl -n $NS create secret generic $DFSP_ID-cluster --from-literal=token=$(openssl rand -hex 32)
+#   envsubst < cluster.yaml | kubectl apply -f - && sh load-app.sh statefulset
+# Uses the callback Service of connector.yaml (scale its Deployment to 0 first: same labels).
+apiVersion: v1
+kind: Service
+metadata: { name: ${DFSP_ID}-hl, namespace: ${NS} }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: switch-connector, dfsp: ${DFSP_ID} }
+  ports: [{ name: cluster, port: 3002 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: ${DFSP_ID}, namespace: ${NS}, labels: { app: switch-connector, dfsp: ${DFSP_ID} } }
+spec:
+  replicas: 3
+  serviceName: ${DFSP_ID}-hl
+  podManagementPolicy: Parallel
+  selector: { matchLabels: { app: switch-connector, dfsp: ${DFSP_ID}, mode: cluster } }
+  template:
+    metadata: { labels: { app: switch-connector, dfsp: ${DFSP_ID}, mode: cluster } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      automountServiceAccountToken: false
+      initContainers:
+        - name: load
+          image: node:24.22.3-alpine
+          command: [sh, -c, "until [ -f /app/.ready ]; do sleep 2; done"]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts: [ { name: app, mountPath: /app } ]
+      containers:
+        - name: connector
+          image: node:24.22.3-alpine
+          workingDir: /app
+          command: [node, dist/src/index.js]
+          env:
+            - { name: NODE_ENV, value: production }
+            - { name: SWITCH_CONNECTOR_FSP_ID, value: ${DFSP_ID} }
+            - { name: SWITCH_URL, value: "https://fspiop.${SWITCH_DOMAIN}" }
+            - { name: SWITCH_PROTOCOL, value: iso20022 }
+            - { name: TLS_DIR, value: /certs }
+            - { name: JWS_KEYS_DIR, value: /jws-peers }
+            - { name: REGISTER_PARTIES, value: "true" }
+            - { name: R2P_AUTO_ACCEPT_MAX, value: "1000" }
+            - { name: REDIS_URL_FILE, value: /run/secrets/redis/url }
+            - { name: ILP_VERSION, value: "4" }
+            - { name: MOCK_ACCOUNTS, value: "${MSISDN}=Test Customer" }
+            - { name: PARTY_CURRENCY, value: "${CURRENCY}" }
+            - { name: SIDECAR_HOST, value: 0.0.0.0 }
+            - { name: ILP_SECRET_FILE, value: /run/secrets/ilp/secret }
+            - { name: CLUSTER_SIZE, value: "3" }
+            - { name: CLUSTER_PEER_URL, value: "http://${DFSP_ID}-{n}.${DFSP_ID}-hl.${NS}.svc.cluster.local:3002" }
+            - { name: CLUSTER_TOKEN_FILE, value: /run/secrets/cluster/token }
+          ports: [ { name: fspiop, containerPort: 3000 }, { name: sidecar, containerPort: 3001 }, { name: cluster, containerPort: 3002 } ]
+          readinessProbe: { httpGet: { path: /health, port: sidecar }, periodSeconds: 5 }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 1Gi } }
+          volumeMounts:
+            - { name: app, mountPath: /app, readOnly: true }
+            - { name: tls, mountPath: /certs, readOnly: true }
+            - { name: jws-peers, mountPath: /jws-peers, readOnly: true }
+            - { name: ilp-secret, mountPath: /run/secrets/ilp, readOnly: true }
+            - { name: cluster-token, mountPath: /run/secrets/cluster, readOnly: true }
+            - { name: redis-url, mountPath: /run/secrets/redis, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: app, emptyDir: {} }
+        - { name: tls, secret: { secretName: ${DFSP_ID}-tls, defaultMode: 0440 } }
+        - { name: jws-peers, secret: { secretName: ${DFSP_ID}-tls-jws-peers, defaultMode: 0444 } }
+        - { name: tmp, emptyDir: {} }
+        - { name: ilp-secret, secret: { secretName: ${DFSP_ID}-ilp, defaultMode: 0440 } }
+        - { name: cluster-token, secret: { secretName: ${DFSP_ID}-cluster, defaultMode: 0440 } }
+        - { name: redis-url, secret: { secretName: ${DFSP_ID}-valkey, defaultMode: 0440, items: [{ key: url, path: url }] } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: ${DFSP_ID}-cluster-port, namespace: ${NS} }
+spec:
+  podSelector: { matchLabels: { app: switch-connector, dfsp: ${DFSP_ID} } }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ port: 3000 }, { port: 3001 }]
+    - from: [{ podSelector: { matchLabels: { app: switch-connector, dfsp: ${DFSP_ID} } } }]
+      ports: [{ port: 3002 }]

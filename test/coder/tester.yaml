@@ -1,0 +1,21 @@
+# A pod to drive payments from inside the cluster: the SDK's outbound API (4001)
+# is only reachable from pods the chart's NetworkPolicy lets in (sdkOutboundFrom
+# in the values file selects role=payment-tester).
+#   NS=default envsubst < tester.yaml | kubectl apply -f -
+#   kubectl -n $NS cp transfer.sh payment-tester:/tmp/transfer.sh; kubectl -n $NS cp load.sh payment-tester:/tmp/load.sh
+apiVersion: v1
+kind: Pod
+metadata:
+  name: payment-tester
+  namespace: ${NS}
+  labels: { role: payment-tester }
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext: { runAsNonRoot: true, runAsUser: 100, seccompProfile: { type: RuntimeDefault } }
+  containers:
+    - name: tester
+      image: curlimages/curl:8.11.1
+      command: [sleep, "604800"]
+      securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: [ALL] } }
+      resources: { requests: { cpu: 10m, memory: 32Mi }, limits: { memory: 128Mi } }
