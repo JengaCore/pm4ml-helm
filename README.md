@@ -138,6 +138,45 @@ ingress are also available under `callback.*`. Restrict
 The full list of values, with defaults, is in
 [charts/pm4ml-dfsp/README.md](charts/pm4ml-dfsp/README.md#values).
 
+## Several releases in one cluster
+
+The namespace is the one you pass with `-n`, and the release name is the name you
+give `helm install`. Resource names follow the release name. The client secret can
+have any name: set it in `mcm.clientSecret.existingSecret` (the default is
+`<release>-mcm`).
+
+Each release needs its own:
+
+- release name
+- `dfspId`
+- `callback.host`, and a DNS record for it
+- client secret, issued by the hub for that DFSP
+
+Example with two releases in separate namespaces:
+
+```sh
+kubectl create namespace bank-a
+kubectl -n bank-a create secret generic bank-a-mcm --from-literal=client-secret='<secret A>'
+helm -n bank-a install bank-a charts/pm4ml-dfsp -f bank-a-values.yaml
+
+kubectl create namespace bank-b
+kubectl -n bank-b create secret generic bank-b-mcm --from-literal=client-secret='<secret B>'
+helm -n bank-b install bank-b charts/pm4ml-dfsp -f bank-b-values.yaml
+```
+
+Each release has its own secret store, Redis and callback service. If releases
+share a namespace, each also needs its own OpenBao seal secret, because the chart
+refuses to render the shared default:
+
+```yaml
+openbao:
+  server:
+    volumes:
+      - { name: seal, secret: { secretName: bank-b-openbao-seal, defaultMode: 0440 } }
+```
+
+The resource requirements below are per release.
+
 ## Resource requirements
 
 These are the chart's default requests, with two replicas each of the SDK and the
