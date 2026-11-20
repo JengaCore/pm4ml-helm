@@ -31,7 +31,8 @@ run_pod() { # <image> <labels> <uid> <command> [env JSON array]
   k logs "$name" 2>/dev/null || true
   k delete pod "$name" --wait=false >/dev/null 2>&1 || true
 }
-store() { k exec "$R-vault-0" -- wget -qO- "http://127.0.0.1:8200/v1/$1"; }
+SP="$R-$KIND-0"   # the store pod (upstream openbao/vault chart)
+store() { k exec "$SP" -- wget -qO- "http://127.0.0.1:8200/v1/$1"; }
 ca_fp() { store pki/cert/ca | jq -er .data.certificate | sha256sum | cut -c1-64; }   # SHA-256 of the CA PEM; fails without a CA
 
 step "install ($KIND, redis $MODE)"
@@ -55,30 +56,28 @@ FP1=$(ca_fp); echo "DFSP CA: $FP1"
 step "Redis"
 # Generous timeouts: first image pulls on a fresh CI node are slow.
 k rollout status deploy/"$R-management-api" --timeout=900s || fail "management-api not ready"
-RH="$R-redis"; [ "$MODE" = ha ] && RH="$R-redis-ha-haproxy"
+# Valkey (upstream chart): HAProxy in front in HA, the service otherwise; a password
+# either way (Secret <release>-redis-auth, key "default").
+RH="$R-valkey"; [ "$MODE" = ha ] && RH="$R-valkey-haproxy"
 if [ "$MODE" = ha ]; then
-  k rollout status statefulset/"$R-redis-ha-server" --timeout=600s
-  k rollout status deploy/"$R-redis-ha-haproxy" --timeout=600s
+  k rollout status statefulset/"$R-valkey" --timeout=600s
+  k rollout status deploy/"$R-valkey-haproxy" --timeout=600s
   sleep 10   # HAProxy marks the master UP after its first health checks
-else k rollout status statefulset/"$R-redis" --timeout=600s; fi
+else k rollout status deploy/"$R-valkey" --timeout=600s; fi
 redis_probe() { # <labels> <command> [auth Secret] -> output
   local env='[]'
   # The password reaches the probe from the Secret (env valueFrom), never on a command line.
-  [ -n "${3:-}" ] && env='[{"name":"REDISCLI_AUTH","valueFrom":{"secretKeyRef":{"name":"'"$3"'","key":"auth"}}}]'
+  [ -n "${3:-}" ] && env='[{"name":"REDISCLI_AUTH","valueFrom":{"secretKeyRef":{"name":"'"$3"'","key":"default"}}}]'
   run_pod redis:7.2.5-alpine "$1" 999 "$2" "$env"
 }
-OWN="app.kubernetes.io/part-of=pm4ml-dfsp,app.kubernetes.io/instance=$R,app.kubernetes.io/name=probe"
-if [ "$MODE" = ha ]; then
-  ok=""; for _ in 1 2 3; do
-    redis_probe "$OWN" "timeout 10 redis-cli -h $RH ping" "$R-redis-auth" | grep -q PONG && { ok=1; break; }
-    sleep 10
-  done
-  [ -n "$ok" ] || fail "Redis with the password"
-  redis_probe "$OWN" "timeout 10 redis-cli -h $RH get x" | grep -q NOAUTH || fail "Redis without the password must be refused"
-  echo "Redis: password required"
-else
-  redis_probe "$OWN" "timeout 10 redis-cli -h $RH ping" | grep -q PONG || fail "Redis"
-fi
+OWN="$R-valkey-client=true,app.kubernetes.io/instance=$R,app.kubernetes.io/name=probe"
+ok=""; for _ in 1 2 3; do
+  redis_probe "$OWN" "timeout 10 redis-cli -h $RH ping" "$R-redis-auth" | grep -q PONG && { ok=1; break; }
+  sleep 10
+done
+[ -n "$ok" ] || fail "Redis with the password"
+redis_probe "$OWN" "timeout 10 redis-cli -h $RH get x" | grep -q NOAUTH || fail "Redis without the password must be refused"
+echo "Redis: password required"
 # grep, not tail: the shell's "Terminated" (stderr) can land after BLOCKED in the log.
 if redis_probe "app.kubernetes.io/name=intruder" "timeout 8 redis-cli -h $RH ping || echo BLOCKED" | grep -q BLOCKED; then
   other=BLOCKED; else other=REACHABLE; fi
@@ -107,11 +106,11 @@ k wait --for=condition=complete "job/$R-bootstrap-2" --timeout=600s || fail "boo
 [ "$(ca_fp)" = "$FP1" ] || fail "DFSP CA changed on upgrade"
 
 step "store pod restart"
-k delete pod "$R-vault-0" --wait=true
+k delete pod "$SP" --wait=true
 # The StatefulSet recreates it; wait for it to exist, then to run (not to be Ready: a
 # sealed Vault never is), then for the API to answer. Every wait is bounded.
-for _ in $(seq 1 60); do k get pod "$R-vault-0" >/dev/null 2>&1 && break; sleep 2; done
-k wait --for=jsonpath='{.status.containerStatuses[0].started}'=true pod/"$R-vault-0" --timeout=600s \
+for _ in $(seq 1 60); do k get pod "$SP" >/dev/null 2>&1 && break; sleep 2; done
+k wait --for=jsonpath='{.status.containerStatuses[0].started}'=true pod/"$SP" --timeout=600s \
   || fail "store pod did not start after restart"
 for _ in $(seq 1 150); do store sys/seal-status >/dev/null 2>&1 && break; sleep 2; done
 store sys/seal-status >/dev/null 2>&1 || fail "store does not answer after restart"
@@ -123,7 +122,7 @@ else
   for i in 0 1 2; do
     key=$(k get secret "$R-store-init" -o jsonpath='{.data.init\.json}' | base64 -d | jq -r ".keys_base64[$i]")
     # shellcheck disable=SC2016  # $K expands in the pod's shell
-    k exec -i "$R-vault-0" -- sh -c 'read -r K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K" >/dev/null' <<<"$key"
+    k exec -i "$SP" -- sh -c 'read -r K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K" >/dev/null' <<<"$key"
   done
 fi
 [ "$(ca_fp)" = "$FP1" ] || fail "DFSP CA lost across a store restart"
@@ -146,16 +145,16 @@ unseal_vault() { # with the original shares; the pod may have just been restarte
   for i in 0 1 2; do
     key=$(k get secret "$R-store-init" -o jsonpath='{.data.init\.json}' | base64 -d | jq -r ".keys_base64[$i]")
     # shellcheck disable=SC2016  # $K expands in the pod's shell
-    k exec -i "$R-vault-0" -- sh -c 'read -r K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K" >/dev/null' <<<"$key" \
+    k exec -i "$SP" -- sh -c 'read -r K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K" >/dev/null' <<<"$key" \
       || fail "Vault rejected an original unseal share after the restore"
   done
 }
-k scale statefulset "$R-vault" --replicas=0 >/dev/null
-k wait --for=delete pod/"$R-vault-0" --timeout=300s
-k delete pvc "data-$R-vault-0" --wait=true --timeout=300s
-k scale statefulset "$R-vault" --replicas=1 >/dev/null
-for _ in $(seq 1 60); do k get pod "$R-vault-0" >/dev/null 2>&1 && break; sleep 2; done
-k wait --for=jsonpath='{.status.containerStatuses[0].started}'=true pod/"$R-vault-0" --timeout=600s || fail "new store pod"
+k scale statefulset "$R-$KIND" --replicas=0 >/dev/null
+k wait --for=delete pod/"$SP" --timeout=300s
+k delete pvc "data-$SP" --wait=true --timeout=300s
+k scale statefulset "$R-$KIND" --replicas=1 >/dev/null
+for _ in $(seq 1 60); do k get pod "$SP" >/dev/null 2>&1 && break; sleep 2; done
+k wait --for=jsonpath='{.status.containerStatuses[0].started}'=true pod/"$SP" --timeout=600s || fail "new store pod"
 for _ in $(seq 1 150); do store sys/seal-status >/dev/null 2>&1 && break; sleep 2; done
 [ "$(store sys/init | jq -r .initialized)" = false ] || fail "the new volume should be empty"
 helm upgrade "$R" "$CHART" -n "$NS" -f "$VALUES" "${BK[@]}" --set restore.enabled=true --timeout 10m

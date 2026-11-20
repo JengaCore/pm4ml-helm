@@ -1,6 +1,6 @@
 # pm4ml-dfsp
 
-![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![AppVersion: v24.19.3](https://img.shields.io/badge/AppVersion-v24.19.3-informational?style=flat-square)
+![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-informational?style=flat-square) ![AppVersion: v24.19.3](https://img.shields.io/badge/AppVersion-v24.19.3-informational?style=flat-square)
 
 Helm chart for a DFSP's Payment Manager (PM4ML) on any Kubernetes, connected to
 a jengacore switch through MCM. It follows
@@ -19,8 +19,8 @@ nothing else in the chart changes.
 | SDK scheme adapter (mTLS + JWS to the switch) | `sdk.*` | v24.19.3, 2 replicas, PDB, graceful stop |
 | management-api (enrolment with MCM) | `managementApi.*`, `mcm.*` | 7.0.0 |
 | The DFSP's core connector | `coreConnector.*` | simulator core connector; any image |
-| Secret store (DFSP CA, private keys) | `store.*` | OpenBao 2.6.5, Raft on a PVC, static seal |
-| Redis (SDK state) | `redis.mode`, `redis-ha.*` | `ha`: Sentinel + HAProxy + password; or `single`, `external` (ElastiCache, Azure Cache) |
+| Secret store (DFSP CA, private keys) | `openbao.*` or `vault.*` (upstream charts) | OpenBao 2.6.5 ([openbao/openbao](https://github.com/openbao/openbao-helm) chart), Raft on a PVC, static seal; Vault 1.13.3 ([hashicorp/vault](https://github.com/hashicorp/vault-helm)) with `presets/store-vault.yaml` |
+| Redis-compatible state store (SDK) | `valkey.*` (upstream chart) | [Valkey](https://github.com/valkey-io/valkey-helm) single node, password; HA (replication + Sentinel + HAProxy) with `presets/valkey-ha.yaml`; a managed Redis with `presets/redis-external.yaml` |
 | Callback edge (switch → DFSP, TLS passthrough) | `callback.*` | L4 `LoadBalancer` on 443; or NodePort, Istio, ingress-nginx |
 | Bootstrap Job (store init, CA, AppRoles, runtime Secrets) | `bootstrap.*` | on, idempotent, one per revision |
 | Backup CronJob (store snapshots → any S3 API) | `backup.*` | off |
@@ -41,9 +41,44 @@ Every chart change raises `version` in `Chart.yaml`; a merge to `main` with a ne
 version publishes it (`.github/workflows/chart-release.yml`) after the same checks
 as every pull request: lint, Kubernetes schemas, kube-linter, shellcheck of every
 embedded script, the generated values table, refusal of unsafe values, and an
-install on kind for OpenBao + Redis HA and Vault + single Redis (bootstrap Job
+install on kind for OpenBao + Valkey HA and Vault + single-node Valkey (bootstrap Job
 with its Role, store, Redis password, NetworkPolicies, upgrade, store restart).
 Run the static checks locally with `.github/scripts/chart-checks.sh`.
+
+## Upstream charts and presets
+
+The chart writes only what is ours: the SDK, management-api, the core connector, the
+callback edge, the bootstrap / backup / restore / certificate-check Jobs and the
+NetworkPolicies. The secret store and the Redis-compatible store are upstream charts,
+pinned in `Chart.yaml`, configured under their own key (`openbao`, `vault`, `valkey`)
+with the upstream chart's values. `values.yaml` holds the production defaults; the
+`presets/` files switch a building block in one `-f`:
+
+| Preset | Gives |
+|---|---|
+| (none) | OpenBao (static seal, Raft on a volume) + single-node Valkey with a password |
+| `presets/valkey-ha.yaml` | Valkey with replication, Sentinel and HAProxy (3 data nodes, 3 Sentinels, 2 HAProxy) |
+| `presets/redis-external.yaml` | A managed Redis (ElastiCache, Azure Cache, Memorystore) instead of Valkey |
+| `presets/store-vault.yaml` | Vault 1.13.3 with key shares instead of OpenBao |
+
+```sh
+helm upgrade --install mydfsp charts/pm4ml-dfsp -f charts/pm4ml-dfsp/presets/valkey-ha.yaml -f my-values.yaml
+```
+
+**Upgrading from 0.1.x:**
+1. Rewrite the values: `redis.mode`, `redis-ha`, `store.type`, `store.persistence`... are
+   refused with a message naming the new key (HA is `presets/valkey-ha.yaml`).
+2. Take a backup (backup CronJob) and keep the OpenBao seal Secret.
+3. **Vault installs only:** the old and the new StatefulSet are both `<release>-vault`,
+   and their selectors differ (immutable), so delete the old one first:
+   `kubectl delete statefulset <release>-vault`. Deleting a StatefulSet does not delete
+   its volume claims (the 0.1.x chart sets no retention policy). Its volume
+   claim has the same name as the new one (`data-<release>-vault-0`); not exercised: if the
+   new Vault does not come up initialised on it, delete the claim and restore (step 4).
+4. Upgrade with `restore.enabled=true`: the store (OpenBao: `<release>-openbao`, a new
+   volume) starts empty and the restore Job brings back the same CA, no new onboarding.
+   Then upgrade again with `restore.enabled=false`. Done on sbx UAT for OpenBao.
+5. Redis holds only payments in flight: upgrade outside traffic.
 
 ## Install
 
@@ -186,13 +221,14 @@ on the enrolment path. Keep the OpenBao seal key Secret: the snapshot is useless
 - **Containers**: non-root, read-only root file system (writable `/tmp`), no
   capabilities, `RuntimeDefault` seccomp; the same defaults for the core connector,
   which you can relax in `coreConnector.securityContext` if its image needs to.
-- **The store must persist**: the chart refuses `store.persistence.enabled: false`
-  unless `store.persistence.acceptDataLoss: true`. Without a volume, any change to
+- **The store must persist**: the chart refuses a store without a volume
+  (`<openbao|vault>.server.dataStorage.enabled: false`) unless `store.acceptDataLoss: true`. Without a volume, any change to
   the store's pod (a `helm upgrade` included) recreates it empty: new CA, onboarding
   again. That happened once on a test release; hence the guard.
-- **Releases sharing a namespace** need their own Redis password Secret
-  (`redis-ha.existingSecret: <release>-redis-auth`; the chart refuses the shared
-  default) and should narrow the redis-ha NetworkPolicy selectors to their release.
+- **Releases sharing a namespace** need their own OpenBao seal Secret
+  (`openbao.server.volumes`, `seal` volume: `<release>-openbao-seal`; the chart refuses
+  the shared default). Valkey's password Secret and NetworkPolicy already follow the
+  release name (`<release>-redis-auth`, label `<release>-valkey-client`).
 
 ## Bring your own core connector
 
@@ -361,17 +397,10 @@ managed Redis over TLS.
 | networkPolicies.managementApiFrom | list | `[]` | Extra peers allowed on management-api's API (9000), e.g. a payment manager UI. |
 | networkPolicies.metricsFrom | list | `[]` | Peers allowed on the metrics port (4004). Default: any pod (metrics hold no secrets). |
 | networkPolicies.sdkOutboundFrom | list | `[]` | Extra peers allowed on the SDK's outbound API (4001), e.g. a core connector deployed elsewhere: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: bank } } }] |
-| redis-ha | object | `{"auth":true,"authKey":"auth","existingSecret":"pm4ml-redis-auth","haproxy":{"enabled":true,"hardAntiAffinity":true,"image":{"repository":"public.ecr.aws/docker/library/haproxy","tag":"3.0.8-alpine"},"networkPolicy":{"enabled":true,"ingressRules":[{"ports":[{"port":6379,"protocol":"TCP"}],"selectors":[{"podSelector":{"matchLabels":{"app.kubernetes.io/part-of":"pm4ml-dfsp"}}}]}]},"replicas":2},"hardAntiAffinity":true,"image":{"repository":"public.ecr.aws/docker/library/redis","tag":"8.2.2-alpine"},"networkPolicy":{"enabled":true,"ingressRules":[{"ports":[{"port":6379,"protocol":"TCP"}],"selectors":[{"podSelector":{"matchLabels":{"app.kubernetes.io/part-of":"pm4ml-dfsp"}}}]}]},"persistentVolume":{"enabled":true,"size":"2Gi"},"redis":{"config":{"appendfsync":"everysec","appendonly":"yes"},"resources":{"limits":{"memory":"512Mi"},"requests":{"cpu":"100m","memory":"256Mi"}}},"replicas":3}` | redis-ha subchart values (dandydeveloper/redis-ha 4.35.5), used when redis.mode is ha. |
-| redis-ha.existingSecret | string | `"pm4ml-redis-auth"` | Secret with the Redis password (key auth); the bootstrap Job creates it with a random password if missing. Must be <release>-redis-auth for any release not named pm4ml (the chart refuses to render otherwise: a subchart value cannot use the release name). |
-| redis-ha.haproxy.networkPolicy | object | `{"enabled":true,"ingressRules":[{"ports":[{"port":6379,"protocol":"TCP"}],"selectors":[{"podSelector":{"matchLabels":{"app.kubernetes.io/part-of":"pm4ml-dfsp"}}}]}]}` | Only this chart's pods (label app.kubernetes.io/part-of: pm4ml-dfsp) reach HAProxy. Releases sharing a namespace: select app.kubernetes.io/instance: <release> instead, here and in redis-ha.networkPolicy below. |
+| openbao | object | `{"csi":{"enabled":false},"enabled":true,"injector":{"enabled":false},"server":{"auditStorage":{"enabled":false},"authDelegator":{"enabled":false},"dataStorage":{"enabled":true,"size":"1Gi","storageClass":null},"image":{"registry":"quay.io","repository":"openbao/openbao","tag":"2.6.5"},"resources":{"limits":{"memory":"256Mi"},"requests":{"cpu":"50m","memory":"128Mi"}},"standalone":{"config":"ui = false\ndisable_mlock = true\nstorage \"raft\" {\n  path    = \"/openbao/data\"\n  node_id = \"{{ .Release.Name }}-openbao-0\"\n}\ncluster_addr = \"http://127.0.0.1:8201\"\napi_addr     = \"http://{{ .Release.Name }}-openbao:8200\"\nlistener \"tcp\" {\n  address     = \"[::]:8200\"\n  tls_disable = 1\n  max_request_json_strings = 100000\n}\nseal \"static\" {\n  current_key_id = \"{{ .Release.Name }}-1\"\n  current_key    = \"file:///openbao/seal/unseal.key\"\n}\n","enabled":true},"volumeMounts":[{"mountPath":"/openbao/seal","name":"seal","readOnly":true}],"volumes":[{"name":"seal","secret":{"defaultMode":288,"secretName":"pm4ml-openbao-seal"}}]},"ui":{"enabled":false}}` | OpenBao subchart (openbao/openbao 0.30.7). |
+| openbao.server.dataStorage.enabled | bool | `true` | The store's volume. Production: true (see store.acceptDataLoss). |
 | redis.external.urlKey | string | `"url"` |  |
-| redis.external.urlSecret | string | `""` | Secret and key holding redis:// or rediss:// URL (with its password). |
-| redis.ha.enabled | bool | `true` | Must be true when mode is ha (it enables the subchart). |
-| redis.mode | string | `"ha"` | ha: the redisHa subchart (Sentinel + HAProxy, password). single: one Redis (tests). external: a managed Redis whose URL is in redis.external.urlSecret. |
-| redis.single.image | string | `"redis:7.2.5-alpine"` |  |
-| redis.single.persistence.enabled | bool | `true` |  |
-| redis.single.persistence.size | string | `"2Gi"` |  |
-| redis.single.persistence.storageClass | string | `""` |  |
+| redis.external.urlSecret | string | `""` | With valkey.enabled false: Secret and key holding the redis:// or rediss:// URL (with its password) of a managed Redis (ElastiCache, Azure Cache, Memorystore). |
 | restore.enabled | bool | `false` | Job that restores the store from the newest backup snapshot (or restore.snapshotKey) after its volume was lost. Only into an empty store; the bootstrap Job is skipped while this is on. Set it back to false afterwards. Uses backup.s3Secret and backup.prefix. |
 | restore.rbac | bool | `true` | Let the Job restart the store pod (OpenBao unseals at start) and management-api. |
 | restore.snapshotKey | string | `""` | Object key of the snapshot to restore. Empty: the newest under the backup prefix. |
@@ -397,17 +426,7 @@ managed Redis over TLS.
 | sdk.resources.requests.memory | string | `"384Mi"` |  |
 | sdk.terminationGracePeriodSeconds | int | `60` |  |
 | sdk.tolerations | list | `[]` |  |
-| store.image.openbao | string | `"openbao/openbao:2.6.5"` |  |
-| store.image.vault | string | `"hashicorp/vault:1.13.3"` |  |
-| store.persistence.acceptDataLoss | bool | `false` | Required to run with persistence off: the store (and the DFSP's identity) is then lost whenever its pod is recreated, including by a helm upgrade that changes it. |
-| store.persistence.enabled | bool | `true` | Production: true. The store holds the DFSP CA and private keys. |
-| store.persistence.size | string | `"1Gi"` |  |
-| store.persistence.storageClass | string | `""` |  |
-| store.resources.limits.memory | string | `"256Mi"` |  |
-| store.resources.requests.cpu | string | `"50m"` |  |
-| store.resources.requests.memory | string | `"128Mi"` |  |
-| store.sealSecret | string | `""` | OpenBao: Secret with the 32-byte static seal key (key unseal.key). Created by the bootstrap Job if missing (back it up!). Default: <release>-openbao-seal. |
-| store.type | string | `"openbao"` | openbao (unseals itself with a static key) or vault (Shamir key shares, as Compose). |
+| store.acceptDataLoss | bool | `false` | Refuse to render a store without a volume unless set: the store (the DFSP's CA, keys and enrolment) would be lost whenever its pod is recreated, a helm upgrade included. Throwaway tests only. |
 | switch.apiType | string | `"fspiop"` | API flavour; must match the switch: fspiop or iso20022. |
 | switch.caBundle | string | `""` | Private CA (PEM) of the switch's mcm./keycloak. hosts, if they do not use a public CA. |
 | switch.currency | string | `""` | Settlement currency of this DFSP on the switch. |
@@ -417,3 +436,5 @@ managed Redis over TLS.
 | switch.keycloakUrl | string | `""` | Keycloak base URL. Default: https://keycloak.<domain>. |
 | switch.mcmUrl | string | `""` | MCM base URL. Default: https://mcm.<domain>/pm4mlapi. |
 | switch.realm | string | `"dfsps"` | Keycloak realm holding the DFSP clients. |
+| valkey | object | `{"auth":{"aclUsers":{"default":{"permissions":"~* &* +@all"}},"enabled":true,"usersExistingSecret":"{{ .Release.Name }}-redis-auth"},"enabled":true,"haproxy":{"enabled":false},"networkPolicy":{"allowExternal":false,"enabled":true},"persistence":{"enabled":true,"size":"2Gi"},"replica":{"enabled":false},"resources":{"limits":{"memory":"512Mi"},"requests":{"cpu":"100m","memory":"256Mi"}},"sentinel":{"enabled":false,"existingSecret":"{{ .Release.Name }}-redis-auth","passwordKey":"sentinel"}}` | Valkey subchart. enabled: false to use redis.external instead. |
+| vault | object | `{"csi":{"enabled":false},"enabled":false,"injector":{"enabled":false},"server":{"auditStorage":{"enabled":false},"authDelegator":{"enabled":false},"dataStorage":{"enabled":true,"size":"1Gi","storageClass":null},"image":{"repository":"hashicorp/vault","tag":"1.13.3"},"resources":{"limits":{"memory":"256Mi"},"requests":{"cpu":"50m","memory":"128Mi"}},"standalone":{"config":"ui = false\ndisable_mlock = true\nstorage \"raft\" {\n  path    = \"/vault/data\"\n  node_id = \"{{ .Release.Name }}-vault-0\"\n}\ncluster_addr = \"http://127.0.0.1:8201\"\napi_addr     = \"http://{{ .Release.Name }}-vault:8200\"\nlistener \"tcp\" {\n  address     = \"[::]:8200\"\n  tls_disable = 1\n}\n","enabled":true}},"ui":{"enabled":false}}` | Vault subchart (hashicorp/vault 0.34.1, image pinned to 1.13.3, the last MPL release). |

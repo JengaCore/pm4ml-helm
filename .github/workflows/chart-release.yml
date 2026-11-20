@@ -84,7 +84,9 @@ jobs:
       - name: Package
         run: |
           echo "REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts" >> "$GITHUB_ENV"
-          helm repo add dandydeveloper https://dandydeveloper.github.io/charts --force-update
+          helm repo add openbao https://openbao.github.io/openbao-helm --force-update
+          helm repo add hashicorp https://helm.releases.hashicorp.com --force-update
+          helm repo add valkey https://valkey.io/valkey-helm/ --force-update
           helm dependency build charts/pm4ml-dfsp
           helm package charts/pm4ml-dfsp --destination dist
           (cd dist && sha256sum "pm4ml-dfsp-$VERSION.tgz" > "pm4ml-dfsp-$VERSION.tgz.sha256")

@@ -8,7 +8,9 @@ step() { echo; echo "=== $*"; }
 CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
 step "dependencies (verified against Chart.lock)"
-helm repo add dandydeveloper https://dandydeveloper.github.io/charts --force-update >/dev/null
+helm repo add openbao https://openbao.github.io/openbao-helm --force-update >/dev/null
+helm repo add hashicorp https://helm.releases.hashicorp.com --force-update >/dev/null
+helm repo add valkey https://valkey.io/valkey-helm/ --force-update >/dev/null
 helm dependency build "$CHART" >/dev/null
 
 step "lint and render every CI values file"
@@ -28,12 +30,17 @@ must_fail() { # message-fragment, helm args...
   grep -q "$want" <<<"$out" || { echo "wrong failure for $*: $out" >&2; exit 1; }
   echo "refused: $*"
 }
-must_fail "set it to other-redis-auth"       --set redis-ha.existingSecret=pm4ml-redis-auth   # shared default password
-must_fail "set redis.ha.enabled: false"      --set redis-ha.existingSecret=x --set redis.mode=single
-must_fail "set redis.ha.enabled: true"       --set redis-ha.existingSecret=x --set redis.ha.enabled=false
-must_fail "acceptDataLoss"                   --set redis-ha.existingSecret=x --set store.persistence.enabled=false
-must_fail "networkPolicies.sdkOutboundFrom"   --set redis-ha.existingSecret=x --set coreConnector.enabled=false --set coreConnector.externalBackendEndpoint=cc:3003
-must_fail "dfspId is required"               --set redis-ha.existingSecret=x --set dfspId=
+must_fail "set the seal Secret to other-openbao-seal" --set-json 'openbao.server.volumes=[{"name":"seal","secret":{"secretName":"pm4ml-openbao-seal"}}]'
+must_fail "sentinel.enabled"                 --set valkey.sentinel.enabled=false   # ours or the subchart's guard
+must_fail "replica.enabled"                  --set valkey.replica.enabled=false
+must_fail "enable one secret store only"     --set vault.enabled=true
+must_fail "set redis.external.urlSecret"     --set valkey.enabled=false
+must_fail "acceptDataLoss"                   --set openbao.server.dataStorage.enabled=false
+must_fail "networkPolicies.sdkOutboundFrom"   --set coreConnector.enabled=false --set coreConnector.externalBackendEndpoint=cc:3003
+must_fail "dfspId is required"               --set dfspId=
+must_fail "0.1.x settings"                   --set redis.mode=ha
+must_fail "0.1.x settings"                   --set redis-ha.replicas=3
+must_fail "0.1.x settings"                   --set store.type=vault
 
 step "Kubernetes schemas ($K8S, CRDs from the datree catalog)"
 kubeconform -strict -summary -kubernetes-version "$K8S" -schema-location default -schema-location "$CRDS" "$OUT"/*.yaml
@@ -47,8 +54,9 @@ done
 kube-linter lint "$OUT"/*.own
 
 step "shellcheck: scripts in the repository and in the rendered manifests"
-python3 .github/scripts/extract-shell.py "$OUT/sh" "$OUT"/*.yaml
-find "$OUT/sh" -name '*redis-ha*' -delete     # third-party (dandydeveloper/redis-ha)
+# This chart's manifests only (the .own files above): the upstream subcharts' scripts
+# are theirs to lint.
+python3 .github/scripts/extract-shell.py "$OUT/sh" "$OUT"/*.own
 shellcheck -s sh -S warning "$OUT"/sh/*
 shellcheck -S warning scripts/*.sh secret-store/*.sh test-backend/*.sh .github/scripts/*.sh post-render/*.sh
 

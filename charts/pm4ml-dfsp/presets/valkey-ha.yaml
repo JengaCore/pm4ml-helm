@@ -1,0 +1,7 @@
+# Valkey HA: 3 nodes with replication, 3 Sentinels, 2 HAProxy in front (clients always
+# reach the master). Needs 3 volumes and, for the anti-affinity to mean anything, 3 nodes.
+#   helm upgrade --install <release> charts/pm4ml-dfsp -f presets/valkey-ha.yaml -f my-values.yaml
+valkey:
+  replica: { enabled: true, replicas: 3 }
+  sentinel: { enabled: true, replicas: 3 }
+  haproxy: { enabled: true, replicas: 2 }

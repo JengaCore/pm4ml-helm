@@ -19,8 +19,8 @@ nothing else in the chart changes.
 | SDK scheme adapter (mTLS + JWS to the switch) | `sdk.*` | v24.19.3, 2 replicas, PDB, graceful stop |
 | management-api (enrolment with MCM) | `managementApi.*`, `mcm.*` | 7.0.0 |
 | The DFSP's core connector | `coreConnector.*` | simulator core connector; any image |
-| Secret store (DFSP CA, private keys) | `store.*` | OpenBao 2.6.5, Raft on a PVC, static seal |
-| Redis (SDK state) | `redis.mode`, `redis-ha.*` | `ha`: Sentinel + HAProxy + password; or `single`, `external` (ElastiCache, Azure Cache) |
+| Secret store (DFSP CA, private keys) | `openbao.*` or `vault.*` (upstream charts) | OpenBao 2.6.5 ([openbao/openbao](https://github.com/openbao/openbao-helm) chart), Raft on a PVC, static seal; Vault 1.13.3 ([hashicorp/vault](https://github.com/hashicorp/vault-helm)) with `presets/store-vault.yaml` |
+| Redis-compatible state store (SDK) | `valkey.*` (upstream chart) | [Valkey](https://github.com/valkey-io/valkey-helm) single node, password; HA (replication + Sentinel + HAProxy) with `presets/valkey-ha.yaml`; a managed Redis with `presets/redis-external.yaml` |
 | Callback edge (switch → DFSP, TLS passthrough) | `callback.*` | L4 `LoadBalancer` on 443; or NodePort, Istio, ingress-nginx |
 | Bootstrap Job (store init, CA, AppRoles, runtime Secrets) | `bootstrap.*` | on, idempotent, one per revision |
 | Backup CronJob (store snapshots → any S3 API) | `backup.*` | off |
@@ -41,9 +41,44 @@ Every chart change raises `version` in `Chart.yaml`; a merge to `main` with a ne
 version publishes it (`.github/workflows/chart-release.yml`) after the same checks
 as every pull request: lint, Kubernetes schemas, kube-linter, shellcheck of every
 embedded script, the generated values table, refusal of unsafe values, and an
-install on kind for OpenBao + Redis HA and Vault + single Redis (bootstrap Job
+install on kind for OpenBao + Valkey HA and Vault + single-node Valkey (bootstrap Job
 with its Role, store, Redis password, NetworkPolicies, upgrade, store restart).
 Run the static checks locally with `.github/scripts/chart-checks.sh`.
+
+## Upstream charts and presets
+
+The chart writes only what is ours: the SDK, management-api, the core connector, the
+callback edge, the bootstrap / backup / restore / certificate-check Jobs and the
+NetworkPolicies. The secret store and the Redis-compatible store are upstream charts,
+pinned in `Chart.yaml`, configured under their own key (`openbao`, `vault`, `valkey`)
+with the upstream chart's values. `values.yaml` holds the production defaults; the
+`presets/` files switch a building block in one `-f`:
+
+| Preset | Gives |
+|---|---|
+| (none) | OpenBao (static seal, Raft on a volume) + single-node Valkey with a password |
+| `presets/valkey-ha.yaml` | Valkey with replication, Sentinel and HAProxy (3 data nodes, 3 Sentinels, 2 HAProxy) |
+| `presets/redis-external.yaml` | A managed Redis (ElastiCache, Azure Cache, Memorystore) instead of Valkey |
+| `presets/store-vault.yaml` | Vault 1.13.3 with key shares instead of OpenBao |
+
+```sh
+helm upgrade --install mydfsp charts/pm4ml-dfsp -f charts/pm4ml-dfsp/presets/valkey-ha.yaml -f my-values.yaml
+```
+
+**Upgrading from 0.1.x:**
+1. Rewrite the values: `redis.mode`, `redis-ha`, `store.type`, `store.persistence`... are
+   refused with a message naming the new key (HA is `presets/valkey-ha.yaml`).
+2. Take a backup (backup CronJob) and keep the OpenBao seal Secret.
+3. **Vault installs only:** the old and the new StatefulSet are both `<release>-vault`,
+   and their selectors differ (immutable), so delete the old one first:
+   `kubectl delete statefulset <release>-vault`. Deleting a StatefulSet does not delete
+   its volume claims (the 0.1.x chart sets no retention policy). Its volume
+   claim has the same name as the new one (`data-<release>-vault-0`); not exercised: if the
+   new Vault does not come up initialised on it, delete the claim and restore (step 4).
+4. Upgrade with `restore.enabled=true`: the store (OpenBao: `<release>-openbao`, a new
+   volume) starts empty and the restore Job brings back the same CA, no new onboarding.
+   Then upgrade again with `restore.enabled=false`. Done on sbx UAT for OpenBao.
+5. Redis holds only payments in flight: upgrade outside traffic.
 
 ## Install
 
@@ -186,13 +221,14 @@ on the enrolment path. Keep the OpenBao seal key Secret: the snapshot is useless
 - **Containers**: non-root, read-only root file system (writable `/tmp`), no
   capabilities, `RuntimeDefault` seccomp; the same defaults for the core connector,
   which you can relax in `coreConnector.securityContext` if its image needs to.
-- **The store must persist**: the chart refuses `store.persistence.enabled: false`
-  unless `store.persistence.acceptDataLoss: true`. Without a volume, any change to
+- **The store must persist**: the chart refuses a store without a volume
+  (`<openbao|vault>.server.dataStorage.enabled: false`) unless `store.acceptDataLoss: true`. Without a volume, any change to
   the store's pod (a `helm upgrade` included) recreates it empty: new CA, onboarding
   again. That happened once on a test release; hence the guard.
-- **Releases sharing a namespace** need their own Redis password Secret
-  (`redis-ha.existingSecret: <release>-redis-auth`; the chart refuses the shared
-  default) and should narrow the redis-ha NetworkPolicy selectors to their release.
+- **Releases sharing a namespace** need their own OpenBao seal Secret
+  (`openbao.server.volumes`, `seal` volume: `<release>-openbao-seal`; the chart refuses
+  the shared default). Valkey's password Secret and NetworkPolicy already follow the
+  release name (`<release>-redis-auth`, label `<release>-valkey-client`).
 
 ## Bring your own core connector
 

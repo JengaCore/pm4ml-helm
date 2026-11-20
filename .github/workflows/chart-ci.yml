@@ -95,7 +95,9 @@ jobs:
 
       - name: Chart dependencies
         run: |
-          helm repo add dandydeveloper https://dandydeveloper.github.io/charts --force-update
+          helm repo add openbao https://openbao.github.io/openbao-helm --force-update
+          helm repo add hashicorp https://helm.releases.hashicorp.com --force-update
+          helm repo add valkey https://valkey.io/valkey-helm/ --force-update
           helm dependency build charts/pm4ml-dfsp
 
       - name: End to end

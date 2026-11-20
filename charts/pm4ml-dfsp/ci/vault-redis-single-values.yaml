@@ -1,4 +1,4 @@
-# CI: Vault (key shares), single Redis, NodePort callback, core connector from Secrets/volumes.
+# CI: Vault (key shares), single-node Valkey (the default), NodePort callback, core connector from Secrets/volumes.
 dfspId: ci-dfsp
 certCheck: { warnDays: 21 }
 switch: { domain: switch.example.test, apiType: iso20022, currency: USD, caBundle: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----" }
@@ -7,8 +7,8 @@ callback:
   preflight: { expectIP: 192.0.2.20 }
   service: { type: NodePort, nodePort: 30443 }
 egress: { whitelistIps: [192.0.2.10, 192.0.2.11] }
-store: { type: vault }
-redis: { mode: single, ha: { enabled: false } }
+openbao: { enabled: false }
+vault: { enabled: true }
 coreConnector:
   image: { repository: registry.example.test/core-connector, tag: "1.0.0" }
   imagePullSecrets: [ { name: registry } ]
